@@ -27,5 +27,6 @@ urlpatterns = [
 
     # Your APIs
     path("api/", include("recipes.urls")),
+    path("api/", include("cooking.urls")),
 ]
 
