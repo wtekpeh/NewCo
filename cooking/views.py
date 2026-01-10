@@ -9,7 +9,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from recipes.models import Recipe, RecipeIngredient
-from recipe_engine.scaling import predict_ingredients
+from recipe_engine.scaling import predict_ingredients, sum_prediction_frames
 
 from .models import CookBatch, CookBatchItem
 from .serializers import (
@@ -57,6 +57,19 @@ def create_cook_batch(request):
 
     protein_type = (options.get("protein") or "").strip()
 
+    # New multi-protein spec (optional)
+    proteins_spec = options.get("proteins", None)
+    multi_proteins = []
+
+    if isinstance(proteins_spec, list):
+        for p in proteins_spec:
+            if not isinstance(p, dict):
+                continue
+            name = (p.get("protein") or "").strip()
+            cnt = p.get("n_people", None)
+            multi_proteins.append({"protein": name, "n_people": cnt})
+
+
     # Fetch recipe (outside atomic)
     try:
         recipe = Recipe.objects.get(pk=recipe_id, is_active=True)
@@ -96,23 +109,128 @@ def create_cook_batch(request):
     ]
     protein_set = set(protein_rows["ingredient"].dropna().astype(str).tolist())
 
+    
     # Validate protein option if needed (outside atomic)
-    if protein_set and not protein_type:
-        return Response(
-            {
-                "detail": "protein option is required for this recipe.",
-                "protein_choices": sorted(protein_set),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    if protein_set:
+        if multi_proteins:
+            # Remove blanks
+            multi_proteins = [p for p in multi_proteins if p["protein"]]
+
+            if not multi_proteins:
+                return Response(
+                    {
+                        "detail": "protein option is required for this recipe.",
+                        "protein_choices": sorted(protein_set),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # No duplicates
+            seen = set()
+            for p in multi_proteins:
+                key = p["protein"].strip().upper()
+                if key in seen:
+                    return Response(
+                        {"detail": f"Duplicate protein in options.proteins: {p['protein']}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                seen.add(key)
+
+            # Validate counts and sum
+            total = 0
+            for p in multi_proteins:
+                if p["n_people"] is None:
+                    return Response(
+                        {"detail": f"Missing n_people for protein {p['protein']}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                try:
+                    n = int(p["n_people"])
+                except Exception:
+                    return Response(
+                        {"detail": f"Invalid n_people for protein {p['protein']}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if n <= 0:
+                    return Response(
+                        {"detail": f"n_people must be > 0 for protein {p['protein']}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                p["n_people"] = n
+                total += n
+
+            if total != n_people:
+                return Response(
+                    {
+                        "detail": f"Sum of options.proteins n_people must equal {n_people}.",
+                        "expected": n_people,
+                        "got": total,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            normalized_set = {str(x).strip().upper() for x in protein_set}
+            for p in multi_proteins:
+                if p["protein"].strip().upper() not in normalized_set:
+                    return Response(
+                        {
+                            "detail": f"protein_type must be one of {sorted(normalized_set)}",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        else:
+            # Single protein mode
+            if not protein_type:
+                return Response(
+                    {
+                        "detail": "protein option is required for this recipe.",
+                        "protein_choices": sorted(protein_set),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
 
     # Predict raw (outside atomic)
-    pred = predict_ingredients(
-        df_recipe=df,
-        n_people=n_people,
-        protein_type=protein_type if protein_set else None,
-        protein_set=protein_set if protein_set else None,
-    )
+    if protein_set and multi_proteins:
+        pred_frames = []
+        for p in multi_proteins:
+            df_pred = predict_ingredients(
+                df_recipe=df,
+                n_people=p["n_people"],
+                protein_type=p["protein"],
+                protein_set=protein_set,
+            )
+            pred_frames.append(df_pred)
+
+        pred = sum_prediction_frames(pred_frames)
+
+        # Bring back recipe params (q10_g, b, c_g, bounds, option_group/value, etc.)
+        # sum_prediction_frames returns only ingredient/group + pred_g/pred_kg
+        pred_sum = pred
+
+        merge_keys = ["ingredient"]
+        if "group" in df.columns and "group" in pred_sum.columns:
+            merge_keys = ["ingredient", "group"]
+
+        pred = df.merge(pred_sum, on=merge_keys, how="left")
+
+        # Safety: if something didn't match, fill with 0 (shouldn't happen if ingredient names match)
+        pred["pred_g"] = pred["pred_g"].fillna(0.0)
+        pred["pred_kg"] = pred["pred_kg"].fillna(0.0)
+
+
+        # Store a readable label (no schema change)
+        protein_type = " + ".join([p["protein"] for p in multi_proteins])
+        options["protein"] = protein_type
+    else:
+        pred = predict_ingredients(
+            df_recipe=df,
+            n_people=n_people,
+            protein_type=protein_type if protein_set else None,
+            protein_set=protein_set if protein_set else None,
+        )
+
 
     # Clamp with bounds (outside atomic) - DO NOT re-inflate excluded proteins
     pred["final_g"] = pred["pred_g"].astype(float)
@@ -127,7 +245,7 @@ def create_cook_batch(request):
             str(row.get("group", "")).lower() == "protein"
             or str(row.get("option_group", "")).lower() == "protein"
         )
-        if is_protein_row and protein_set:
+        if is_protein_row and protein_set and not multi_proteins:
             chosen = (protein_type or "").strip().upper()
             current = str(row.get("ingredient", "")).strip().upper()
             if current != chosen:

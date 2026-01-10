@@ -157,3 +157,56 @@ def predict_with_scales(
     out["pred_g_new"] = out["pred_g_new"].astype(float)
     out["pred_kg_new"] = out["pred_g_new"] / 1000.0
     return out
+
+
+
+def sum_prediction_frames(
+    pred_frames: Iterable[pd.DataFrame],
+    schema: RecipeSchema = RecipeSchema(),
+) -> pd.DataFrame:
+    """
+    Sum multiple prediction outputs (e.g., per-protein slice predictions)
+    into one DataFrame by ingredient (+ group if present).
+
+    Each frame should contain:
+      - schema.ingredient (default: "ingredient")
+      - pred_g
+      - optionally schema.group (default: "group")
+
+    Output contains:
+      - ingredient
+      - group (if present in any frame)
+      - pred_g (summed)
+      - pred_kg (recomputed)
+    """
+    frames = [df.copy() for df in pred_frames if df is not None]
+    if not frames:
+        raise ValueError("pred_frames is empty")
+
+    # Determine whether to keep group
+    keep_group = any(schema.group in f.columns for f in frames)
+
+    cols = [schema.ingredient, "pred_g"]
+    if keep_group:
+        cols.insert(1, schema.group)
+
+    # Normalize minimal columns + types
+    norm = []
+    for f in frames:
+        missing = [c for c in cols if c not in f.columns]
+        if missing:
+            raise KeyError(f"Prediction frame missing required columns: {missing}")
+
+        tmp = f[cols].copy()
+        tmp[schema.ingredient] = tmp[schema.ingredient].astype(str)
+        if keep_group:
+            tmp[schema.group] = tmp[schema.group].astype(str)
+        tmp["pred_g"] = pd.to_numeric(tmp["pred_g"], errors="raise").astype(float)
+        norm.append(tmp)
+
+    all_df = pd.concat(norm, ignore_index=True)
+
+    group_cols = [schema.ingredient] + ([schema.group] if keep_group else [])
+    out = all_df.groupby(group_cols, as_index=False)["pred_g"].sum()
+    out["pred_kg"] = out["pred_g"] / 1000.0
+    return out
