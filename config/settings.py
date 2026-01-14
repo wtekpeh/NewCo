@@ -37,8 +37,8 @@ ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://m_vite.williamtekpeh.com",
-    "https://m_api.williamtekpeh.com",
+    "https://vite.williamtekpeh.com",
+    "https://api.williamtekpeh.com",
 ]
 
 # Add these CORS settings:
