@@ -4,9 +4,8 @@ from django.db import transaction
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from django.views.decorators.csrf import csrf_exempt
 
 
 from .models import Recipe, RecipeIngredient
@@ -14,14 +13,13 @@ from .serializers import RecipeSerializer
 
 from recipe_engine.scaling import predict_ingredients
 
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.utils import extend_schema
 from .serializers import RecipePredictRequestSerializer, RecipePredictResponseSerializer
-
 
 
 @extend_schema(responses=RecipeSerializer(many=True))
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def list_recipes(request):
     """
     GET /api/recipes/
@@ -35,10 +33,8 @@ def list_recipes(request):
     request=RecipePredictRequestSerializer,
     responses=RecipePredictResponseSerializer,
 )
-
-@csrf_exempt
 @api_view(["POST"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def predict_recipe(request, pk: int):
     """
     POST /api/recipes/<id>/predict/
@@ -61,10 +57,14 @@ def predict_recipe(request, pk: int):
     try:
         n_people = float(request.data.get("n_people"))
     except (TypeError, ValueError):
-        return Response({"detail": "n_people must be a number."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": "n_people must be a number."}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     if n_people <= 0:
-        return Response({"detail": "n_people must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": "n_people must be > 0."}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     options = request.data.get("options") or {}
     protein_type = (options.get("protein") or "").strip()
@@ -74,16 +74,19 @@ def predict_recipe(request, pk: int):
         try:
             recipe = Recipe.objects.get(pk=pk, is_active=True)
         except Recipe.DoesNotExist:
-            return Response({"detail": "Recipe not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Recipe not found."}, status=status.HTTP_404_NOT_FOUND
+            )
 
-        ingredients_qs = (
-            RecipeIngredient.objects
-            .filter(recipe=recipe, is_active=True)
-            .order_by("item_no", "id")
-        )
+        ingredients_qs = RecipeIngredient.objects.filter(
+            recipe=recipe, is_active=True
+        ).order_by("item_no", "id")
 
         if not ingredients_qs.exists():
-            return Response({"detail": "Recipe has no active ingredients."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Recipe has no active ingredients."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         df = pd.DataFrame(
             list(
@@ -121,6 +124,20 @@ def predict_recipe(request, pk: int):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if protein_set and protein_type:
+        normalized_set = {str(x).strip().upper() for x in protein_set}
+        chosen = protein_type.strip().upper()
+
+        if chosen not in normalized_set:
+            return Response(
+                {
+                    "detail": "Invalid protein option.",
+                    "protein_choices": sorted(protein_set),
+                    "provided": protein_type,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     # 5) Predict (pure python)
     pred = predict_ingredients(
         df_recipe=df,
@@ -154,7 +171,6 @@ def predict_recipe(request, pk: int):
                 pred.at[idx, "was_clamped"] = False
                 continue
 
-
         min_total = float(n_people) * float(min_pp) if pd.notna(min_pp) else None
         max_total = float(n_people) * float(max_pp) if pd.notna(max_pp) else None
 
@@ -166,10 +182,9 @@ def predict_recipe(request, pk: int):
             val = max_total
 
         pred.at[idx, "final_g"] = val
-        pred.at[idx, "was_clamped"] = (val != float(row["pred_g"]))
+        pred.at[idx, "was_clamped"] = val != float(row["pred_g"])
 
     pred["final_kg"] = pred["final_g"].astype(float) / 1000.0
-
 
     # 6) JSON response
     items = []

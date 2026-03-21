@@ -74,3 +74,13 @@ def can_view_batch(user, branch):
         return True
 
     return False
+
+
+def can_update_batch(user, branch):
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+
+    if has_global_access(user):
+        return True
+
+    return is_branch_manager(user, branch)

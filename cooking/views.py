@@ -22,7 +22,12 @@ from drf_spectacular.utils import extend_schema, OpenApiResponse
 
 from django.shortcuts import get_object_or_404
 from accounts.models import Branch
-from accounts.permissions import can_create_batch, can_view_batch, has_global_access
+from accounts.permissions import (
+    can_create_batch,
+    can_view_batch,
+    can_update_batch,
+    has_global_access,
+)
 
 
 @extend_schema(
@@ -379,7 +384,7 @@ def update_cook_batch_actuals(request, batch_id: int):
             {"detail": "Batch not found."}, status=status.HTTP_404_NOT_FOUND
         )
 
-    if not can_view_batch(request.user, batch.branch):
+    if not can_update_batch(request.user, batch.branch):
         return Response(
             {"detail": "You do not have permission to update this batch."},
             status=status.HTTP_403_FORBIDDEN,
