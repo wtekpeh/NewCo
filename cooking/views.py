@@ -5,7 +5,7 @@ from django.utils import timezone
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
 from recipes.models import Recipe, RecipeIngredient
@@ -17,9 +17,12 @@ from .serializers import (
     CookBatchCreateRequestSerializer,
     CookBatchActualsUpdateRequestSerializer,
 )
+
 from drf_spectacular.utils import extend_schema, OpenApiResponse
 
-
+from django.shortcuts import get_object_or_404
+from accounts.models import Branch
+from accounts.permissions import can_create_batch, can_view_batch, has_global_access
 
 
 @extend_schema(
@@ -32,7 +35,7 @@ from drf_spectacular.utils import extend_schema, OpenApiResponse
     },
 )
 @api_view(["POST"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def create_cook_batch(request):
     """
     POST /api/cooking/batches/
@@ -51,6 +54,7 @@ def create_cook_batch(request):
         return Response(req.errors, status=status.HTTP_400_BAD_REQUEST)
 
     recipe_id = req.validated_data["recipe_id"]
+    branch_id = req.validated_data["branch_id"]
     n_people = int(req.validated_data["n_people"])
     options = req.validated_data.get("options") or {}
     notes = req.validated_data.get("notes", "")
@@ -69,21 +73,31 @@ def create_cook_batch(request):
             cnt = p.get("n_people", None)
             multi_proteins.append({"protein": name, "n_people": cnt})
 
-
     # Fetch recipe (outside atomic)
     try:
         recipe = Recipe.objects.get(pk=recipe_id, is_active=True)
     except Recipe.DoesNotExist:
-        return Response({"detail": "Recipe not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Recipe not found."}, status=status.HTTP_404_NOT_FOUND
+        )
+
+    branch = get_object_or_404(Branch, pk=branch_id, is_active=True)
+
+    if not can_create_batch(request.user, branch):
+        return Response(
+            {"detail": "You do not have permission to create a batch for this branch."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # Fetch ingredients (outside atomic)
-    ingredients_qs = (
-        RecipeIngredient.objects
-        .filter(recipe=recipe, is_active=True)
-        .order_by("item_no", "id")
-    )
+    ingredients_qs = RecipeIngredient.objects.filter(
+        recipe=recipe, is_active=True
+    ).order_by("item_no", "id")
     if not ingredients_qs.exists():
-        return Response({"detail": "Recipe has no active ingredients."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Recipe has no active ingredients."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     # Build dataframe for engine (outside atomic)
     df = pd.DataFrame(
@@ -109,7 +123,6 @@ def create_cook_batch(request):
     ]
     protein_set = set(protein_rows["ingredient"].dropna().astype(str).tolist())
 
-    
     # Validate protein option if needed (outside atomic)
     if protein_set:
         if multi_proteins:
@@ -131,7 +144,9 @@ def create_cook_batch(request):
                 key = p["protein"].strip().upper()
                 if key in seen:
                     return Response(
-                        {"detail": f"Duplicate protein in options.proteins: {p['protein']}"},
+                        {
+                            "detail": f"Duplicate protein in options.proteins: {p['protein']}"
+                        },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 seen.add(key)
@@ -190,6 +205,18 @@ def create_cook_batch(request):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            normalized_set = {str(x).strip().upper() for x in protein_set}
+            chosen = protein_type.strip().upper()
+
+            if chosen not in normalized_set:
+                return Response(
+                    {
+                        "detail": "Invalid protein option.",
+                        "protein_choices": sorted(protein_set),
+                        "provided": protein_type,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
     # Predict raw (outside atomic)
     if protein_set and multi_proteins:
@@ -219,7 +246,6 @@ def create_cook_batch(request):
         pred["pred_g"] = pred["pred_g"].fillna(0.0)
         pred["pred_kg"] = pred["pred_kg"].fillna(0.0)
 
-
         # Store a readable label (no schema change)
         protein_type = " + ".join([p["protein"] for p in multi_proteins])
         options["protein"] = protein_type
@@ -230,7 +256,6 @@ def create_cook_batch(request):
             protein_type=protein_type if protein_set else None,
             protein_set=protein_set if protein_set else None,
         )
-
 
     # Clamp with bounds (outside atomic) - DO NOT re-inflate excluded proteins
     pred["final_g"] = pred["pred_g"].astype(float)
@@ -263,7 +288,7 @@ def create_cook_batch(request):
             val = max_total
 
         pred.at[idx, "final_g"] = val
-        pred.at[idx, "was_clamped"] = (val != float(row["pred_g"]))
+        pred.at[idx, "was_clamped"] = val != float(row["pred_g"])
 
     pred["final_kg"] = pred["final_g"].astype(float) / 1000.0
 
@@ -277,8 +302,16 @@ def create_cook_batch(request):
                 q10_g=float(r["q10_g"]),
                 b=float(r["b"]),
                 c_g=float(r["c_g"]),
-                min_per_person_g=(float(r["min_per_person_g"]) if pd.notna(r.get("min_per_person_g")) else None),
-                max_per_person_g=(float(r["max_per_person_g"]) if pd.notna(r.get("max_per_person_g")) else None),
+                min_per_person_g=(
+                    float(r["min_per_person_g"])
+                    if pd.notna(r.get("min_per_person_g"))
+                    else None
+                ),
+                max_per_person_g=(
+                    float(r["max_per_person_g"])
+                    if pd.notna(r.get("max_per_person_g"))
+                    else None
+                ),
                 pred_g=float(r["pred_g"]),
                 pred_kg=float(r["pred_kg"]),
                 final_g=float(r["final_g"]),
@@ -293,6 +326,8 @@ def create_cook_batch(request):
     with transaction.atomic():
         batch = CookBatch.objects.create(
             recipe=recipe,
+            branch=branch,
+            created_by=request.user,
             n_people=n_people,
             options=options,
             protein_type=protein_type,
@@ -321,7 +356,7 @@ def create_cook_batch(request):
     },
 )
 @api_view(["PATCH"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def update_cook_batch_actuals(request, batch_id: int):
     """
     PATCH /api/cooking/batches/{batch_id}/actuals/
@@ -340,7 +375,15 @@ def update_cook_batch_actuals(request, batch_id: int):
     try:
         batch = CookBatch.objects.get(pk=batch_id)
     except CookBatch.DoesNotExist:
-        return Response({"detail": "Batch not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Batch not found."}, status=status.HTTP_404_NOT_FOUND
+        )
+
+    if not can_view_batch(request.user, batch.branch):
+        return Response(
+            {"detail": "You do not have permission to update this batch."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # Validate item IDs are unique in payload
     payload_ids = [x["id"] for x in items_payload]
@@ -353,17 +396,18 @@ def update_cook_batch_actuals(request, batch_id: int):
     # Atomic write
     with transaction.atomic():
         # Lock batch items we intend to update
-        qs = (
-            CookBatchItem.objects
-            .select_for_update()
-            .filter(batch=batch, id__in=payload_ids)
+        qs = CookBatchItem.objects.select_for_update().filter(
+            batch=batch, id__in=payload_ids
         )
 
         found_ids = set(qs.values_list("id", flat=True))
         missing = [i for i in payload_ids if i not in found_ids]
         if missing:
             return Response(
-                {"detail": "Some items do not belong to this batch.", "missing_item_ids": missing},
+                {
+                    "detail": "Some items do not belong to this batch.",
+                    "missing_item_ids": missing,
+                },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -394,21 +438,40 @@ def update_cook_batch_actuals(request, batch_id: int):
     responses={200: CookBatchSerializer(many=True)},
 )
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def list_cook_batches(request):
-    qs = CookBatch.objects.all().order_by("-created_at")
+    user = request.user
+
+    if has_global_access(user):
+        qs = CookBatch.objects.all().order_by("-created_at")
+    else:
+        qs = (
+            CookBatch.objects.filter(
+                branch__staff_roles__staff_profile=user,
+                branch__staff_roles__is_active=True,
+                branch__staff_roles__branch__is_active=True,
+                created_by__is_active=True,
+            )
+            .distinct()
+            .order_by("-created_at")
+        )
+
     return Response(CookBatchSerializer(qs, many=True).data, status=status.HTTP_200_OK)
 
 
 @extend_schema(
     methods=["GET"],
-    responses={200: CookBatchSerializer, 404: OpenApiResponse(description="Not found")},
+    responses={200: CookBatchSerializer},
 )
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def retrieve_cook_batch(request, batch_id: int):
-    try:
-        batch = CookBatch.objects.get(pk=batch_id)
-    except CookBatch.DoesNotExist:
-        return Response({"detail": "Batch not found."}, status=status.HTTP_404_NOT_FOUND)
+    batch = get_object_or_404(CookBatch, pk=batch_id)
+
+    if not can_view_batch(request.user, batch.branch):
+        return Response(
+            {"detail": "You do not have permission to view this batch."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     return Response(CookBatchSerializer(batch).data, status=status.HTTP_200_OK)

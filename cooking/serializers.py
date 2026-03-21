@@ -28,6 +28,10 @@ class CookBatchItemSerializer(serializers.ModelSerializer):
 class CookBatchSerializer(serializers.ModelSerializer):
     items = CookBatchItemSerializer(many=True, read_only=True)
     recipe_name = serializers.CharField(source="recipe.name", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+    created_by_name = serializers.CharField(
+        source="created_by.full_name", read_only=True
+    )
 
     class Meta:
         model = CookBatch
@@ -35,11 +39,23 @@ class CookBatchSerializer(serializers.ModelSerializer):
             "id",
             "recipe",
             "recipe_name",
+            "branch",
+            "branch_name",
+            "created_by",
+            "created_by_name",
             "n_people",
             "options",
             "protein_type",
             "status",
             "notes",
+            "created_at",
+            "items",
+        ]
+        read_only_fields = [
+            "created_by",
+            "created_by_name",
+            "branch_name",
+            "recipe_name",
             "created_at",
             "items",
         ]
@@ -50,7 +66,9 @@ class CookBatchCreateRequestSerializer(serializers.Serializer):
     What the frontend sends to create a batch log.
     We will generate predictions server-side and save atomically.
     """
+
     recipe_id = serializers.IntegerField()
+    branch_id = serializers.IntegerField()
     n_people = serializers.IntegerField(min_value=1)
     options = serializers.DictField(required=False)
     notes = serializers.CharField(required=False, allow_blank=True)

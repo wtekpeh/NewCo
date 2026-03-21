@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "recipes",
     "cooking",
+    "accounts",
     "drf_spectacular",
 ]
 
@@ -129,6 +130,9 @@ DATABASES = {
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "config.keycloak_auth.KeycloakAuthentication",
+    ],
 }
 
 SPECTACULAR_SETTINGS = {
@@ -184,3 +188,9 @@ def patched_get_host(self):
 
 
 django.http.request.HttpRequest.get_host = patched_get_host
+
+KEYCLOAK_CONFIG = {
+    "SERVER_URL": os.getenv("KEYCLOAK_SERVER_URL"),
+    "REALM": os.getenv("KEYCLOAK_REALM"),
+    "CLIENT_ID": os.getenv("KEYCLOAK_CLIENT_ID"),
+}

@@ -14,6 +14,18 @@ class CookBatch(models.Model):
         related_name="cook_batches",
     )
 
+    branch = models.ForeignKey(
+        "accounts.Branch",
+        on_delete=models.PROTECT,
+        related_name="cook_batches",
+    )
+
+    created_by = models.ForeignKey(
+        "accounts.StaffProfile",
+        on_delete=models.PROTECT,
+        related_name="created_cook_batches",
+    )
+
     n_people = models.PositiveIntegerField()
 
     # Keep options flexible (today: protein choice; future: spice level, etc.)
@@ -26,7 +38,7 @@ class CookBatch(models.Model):
     status = models.CharField(
         max_length=20,
         default="draft",
-        help_text="draft / confirmed / cooked",
+        help_text="draft / confirmed / cooked / final",
     )
 
     notes = models.TextField(blank=True)
@@ -37,7 +49,7 @@ class CookBatch(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Batch #{self.id} | {self.recipe_id} | {self.n_people} people"
+        return f"Batch #{self.id} | {self.recipe_id} | {self.branch_id} | {self.n_people} people"
 
 
 class CookBatchItem(models.Model):
