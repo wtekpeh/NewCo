@@ -12,6 +12,8 @@ from .models import Recipe, RecipeIngredient
 from .serializers import RecipeSerializer
 
 from recipe_engine.scaling import predict_ingredients
+from recipe_engine.scaling import predict_with_scales
+from recipe_engine.services.scale_store import load_scales_df
 
 from drf_spectacular.utils import extend_schema
 from .serializers import RecipePredictRequestSerializer, RecipePredictResponseSerializer
@@ -138,13 +140,31 @@ def predict_recipe(request, pk: int):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    # 5) Predict (pure python)
-    pred = predict_ingredients(
-        df_recipe=df,
-        n_people=n_people,
-        protein_type=protein_type if protein_set else None,
-        protein_set=protein_set if protein_set else None,
-    )
+    # 5) Predict (adaptive if scales exist, otherwise fallback)
+
+    scales_df = load_scales_df()
+
+    use_scales = scales_df is not None and not scales_df.empty
+
+    if use_scales:
+        pred = predict_with_scales(
+            df_recipe=df,
+            n_people=n_people,
+            df_scales=scales_df,
+            protein_type=protein_type if protein_set else None,
+            protein_set=protein_set if protein_set else None,
+        )
+
+        # unify column names so rest of code remains unchanged
+        pred["pred_g"] = pred["pred_g_new"]
+        pred["pred_kg"] = pred["pred_kg_new"]
+    else:
+        pred = predict_ingredients(
+            df_recipe=df,
+            n_people=n_people,
+            protein_type=protein_type if protein_set else None,
+            protein_set=protein_set if protein_set else None,
+        )
 
     # 5b) Safety clamp using per-person bounds (if provided)
     # final_g = clamp(pred_g, n_people*min_pp, n_people*max_pp)
@@ -187,17 +207,43 @@ def predict_recipe(request, pk: int):
     pred["final_kg"] = pred["final_g"].astype(float) / 1000.0
 
     # 6) JSON response
+    # Load scales once (same logic already used above)
+    scales_df = load_scales_df()
+    scale_map = {}
+
+    if scales_df is not None and not scales_df.empty:
+        scale_map = dict(zip(scales_df["ingredient"], scales_df["s"]))
+
     items = []
+
     for _, row in pred.iterrows():
+        ingredient = row["ingredient"]
+
+        # Base prediction (recompute safely)
+        base_pred_g = float(row["q10_g"]) * (float(n_people) / 10.0) ** float(
+            row["b"]
+        ) + float(row["c_g"])
+        base_pred_kg = base_pred_g / 1000.0
+
+        scale_used = float(scale_map.get(ingredient, 1.0))
+        used_calibration = ingredient in scale_map
+
         items.append(
             {
-                "ingredient": row["ingredient"],
+                "ingredient": ingredient,
                 "group": row.get("group"),
                 "q10_g": float(row["q10_g"]),
                 "b": float(row["b"]),
                 "c_g": float(row["c_g"]),
+                # Explainability
+                "base_pred_g": base_pred_g,
+                "base_pred_kg": base_pred_kg,
+                "scale_used": scale_used,
+                "used_calibration": used_calibration,
+                # Final values
                 "pred_g": float(row["pred_g"]),
                 "pred_kg": float(row["pred_kg"]),
+                # Keep existing fields
                 "final_g": float(row["final_g"]),
                 "final_kg": float(row["final_kg"]),
                 "was_clamped": bool(row["was_clamped"]),

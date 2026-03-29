@@ -39,11 +39,22 @@ class RecipePredictRequestSerializer(serializers.Serializer):
 class RecipePredictItemSerializer(serializers.Serializer):
     ingredient = serializers.CharField()
     group = serializers.CharField(required=False, allow_null=True)
+
     q10_g = serializers.FloatField()
     b = serializers.FloatField()
     c_g = serializers.FloatField()
+
+    # Base prediction (always available)
+    base_pred_g = serializers.FloatField()
+    base_pred_kg = serializers.FloatField()
+
+    # Final prediction (what system uses)
     pred_g = serializers.FloatField()
     pred_kg = serializers.FloatField()
+
+    # Explainability fields
+    scale_used = serializers.FloatField(required=False)
+    used_calibration = serializers.BooleanField()
 
 
 class RecipePredictResponseSerializer(serializers.Serializer):

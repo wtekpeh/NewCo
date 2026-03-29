@@ -10,6 +10,8 @@ from rest_framework.response import Response
 
 from recipes.models import Recipe, RecipeIngredient
 from recipe_engine.scaling import predict_ingredients, sum_prediction_frames
+from recipe_engine.scaling import predict_with_scales
+from recipe_engine.services.scale_store import load_scales_df
 
 from .models import CookBatch, CookBatchItem
 from .serializers import (
@@ -28,6 +30,8 @@ from accounts.permissions import (
     can_update_batch,
     has_global_access,
 )
+
+from recipe_engine.services.scale_store import recalibrate_and_store
 
 
 @extend_schema(
@@ -226,13 +230,29 @@ def create_cook_batch(request):
     # Predict raw (outside atomic)
     if protein_set and multi_proteins:
         pred_frames = []
-        for p in multi_proteins:
+
+        scales_df = load_scales_df()
+        use_scales = scales_df is not None and not scales_df.empty
+
+        if use_scales:
+            df_pred = predict_with_scales(
+                df_recipe=df,
+                n_people=p["n_people"],
+                df_scales=scales_df,
+                protein_type=p["protein"],
+                protein_set=protein_set,
+            )
+
+            df_pred["pred_g"] = df_pred["pred_g_new"]
+            df_pred["pred_kg"] = df_pred["pred_kg_new"]
+        else:
             df_pred = predict_ingredients(
                 df_recipe=df,
                 n_people=p["n_people"],
                 protein_type=p["protein"],
                 protein_set=protein_set,
             )
+
             pred_frames.append(df_pred)
 
         pred = sum_prediction_frames(pred_frames)
@@ -255,12 +275,28 @@ def create_cook_batch(request):
         protein_type = " + ".join([p["protein"] for p in multi_proteins])
         options["protein"] = protein_type
     else:
-        pred = predict_ingredients(
-            df_recipe=df,
-            n_people=n_people,
-            protein_type=protein_type if protein_set else None,
-            protein_set=protein_set if protein_set else None,
-        )
+        scales_df = load_scales_df()
+        use_scales = scales_df is not None and not scales_df.empty
+
+        if use_scales:
+            pred = predict_with_scales(
+                df_recipe=df,
+                n_people=n_people,
+                df_scales=scales_df,
+                protein_type=protein_type if protein_set else None,
+                protein_set=protein_set if protein_set else None,
+            )
+
+            # normalize columns
+            pred["pred_g"] = pred["pred_g_new"]
+            pred["pred_kg"] = pred["pred_kg_new"]
+        else:
+            pred = predict_ingredients(
+                df_recipe=df,
+                n_people=n_people,
+                protein_type=protein_type if protein_set else None,
+                protein_set=protein_set if protein_set else None,
+            )
 
     # Clamp with bounds (outside atomic) - DO NOT re-inflate excluded proteins
     pred["final_g"] = pred["pred_g"].astype(float)
@@ -480,3 +516,125 @@ def retrieve_cook_batch(request, batch_id: int):
         )
 
     return Response(CookBatchSerializer(batch).data, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    methods=["POST"],
+    request=None,
+    responses={
+        200: OpenApiResponse(description="Recalibration completed"),
+        400: OpenApiResponse(description="Bad Request"),
+        403: OpenApiResponse(description="Forbidden"),
+    },
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def recalibrate_ingredient_scales(request):
+    """
+    POST /api/cooking/recalibrate/
+
+    Body (all optional):
+      {
+        "tau_days": 14,
+        "branch_id": 3,
+        "recipe_id": 2
+      }
+
+    Permissions:
+      - boss
+      - managing_director
+    """
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to run recalibration."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    tau_days = request.data.get("tau_days", 14)
+    branch_id = request.data.get("branch_id")
+    recipe_id = request.data.get("recipe_id")
+
+    try:
+        tau_days = float(tau_days)
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "tau_days must be a number."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if tau_days <= 0:
+        return Response(
+            {"detail": "tau_days must be > 0."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if branch_id in ("", None):
+        branch_id = None
+    else:
+        try:
+            branch_id = int(branch_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "branch_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    if recipe_id in ("", None):
+        recipe_id = None
+    else:
+        try:
+            recipe_id = int(recipe_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "recipe_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    try:
+        saved_df = recalibrate_and_store(
+            tau_days=tau_days,
+            branch_id=branch_id,
+            recipe_id=recipe_id,
+        )
+    except Exception as exc:
+        return Response(
+            {"detail": f"Recalibration failed: {exc}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if saved_df.empty:
+        return Response(
+            {
+                "message": "No scales were generated.",
+                "tau_days": tau_days,
+                "branch_id": branch_id,
+                "recipe_id": recipe_id,
+                "scales_updated": 0,
+                "items": [],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    items = []
+    for _, row in saved_df.iterrows():
+        items.append(
+            {
+                "ingredient": row["ingredient"],
+                "s": float(row["s"]),
+                "tau_days": float(row["tau_days"]),
+                "sample_count": int(row["sample_count"]),
+                "computed_at": str(row["computed_at"]),
+            }
+        )
+
+    return Response(
+        {
+            "message": "Recalibration completed successfully.",
+            "tau_days": tau_days,
+            "branch_id": branch_id,
+            "recipe_id": recipe_id,
+            "scales_updated": len(items),
+            "items": items,
+        },
+        status=status.HTTP_200_OK,
+    )

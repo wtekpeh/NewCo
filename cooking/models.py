@@ -105,3 +105,65 @@ class CookBatchItem(models.Model):
 
     def __str__(self):
         return f"{self.ingredient} (Batch #{self.batch_id})"
+
+
+class IngredientScale(models.Model):
+    """
+    Stores learned calibration scale factors per ingredient.
+
+    Scope:
+      - global: branch=None, recipe=None
+      - branch-specific: branch set, recipe=None
+      - recipe-specific: recipe set, branch=None
+      - branch+recipe specific: both set
+
+    For now we can start with global storage, but the model supports
+    future branch/recipe scoped calibration without redesign.
+    """
+
+    ingredient = models.CharField(max_length=120)
+
+    branch = models.ForeignKey(
+        "accounts.Branch",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="ingredient_scales",
+    )
+
+    recipe = models.ForeignKey(
+        "recipes.Recipe",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="ingredient_scales",
+    )
+
+    s = models.FloatField(help_text="Learned multiplicative scale factor")
+
+    tau_days = models.FloatField(default=14.0)
+
+    sample_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of log rows used for this learned scale",
+    )
+
+    computed_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["ingredient"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ingredient", "branch", "recipe"],
+                name="uniq_ingredient_scale_scope",
+            )
+        ]
+
+    def __str__(self):
+        scope = []
+        if self.branch_id:
+            scope.append(f"branch={self.branch_id}")
+        if self.recipe_id:
+            scope.append(f"recipe={self.recipe_id}")
+        scope_text = ", ".join(scope) if scope else "global"
+        return f"{self.ingredient} | s={self.s:.4f} | {scope_text}"
