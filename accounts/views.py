@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from typing import Any, cast
 
+
 from rest_framework import status
 from django.db import transaction
 
@@ -21,6 +22,25 @@ from accounts.permissions import has_global_access
 def get_current_user(request):
     user = request.user
 
+    active_branch_roles = user.branch_roles.filter(
+        is_active=True,
+        branch__is_active=True,
+    ).select_related("branch")
+
+    branch_roles_data = [
+        {
+            "branch_id": assignment.branch.id,
+            "branch_name": assignment.branch.name,
+            "role": assignment.role,
+            "is_active": assignment.is_active,
+        }
+        for assignment in active_branch_roles
+    ]
+
+    can_create_batch_any = has_global_access(user) or any(
+        assignment.role == "branch_manager" for assignment in active_branch_roles
+    )
+
     return Response(
         {
             "id": user.id,
@@ -28,6 +48,8 @@ def get_current_user(request):
             "full_name": user.full_name,
             "global_role": user.global_role,
             "can_recalibrate": has_global_access(user),
+            "can_create_batch_any": can_create_batch_any,
+            "branch_roles": branch_roles_data,
         }
     )
 
@@ -48,29 +70,6 @@ def list_users(request):
 
     serializer = StaffProfileListSerializer(users, many=True)
     return Response(serializer.data)
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def create_user(request):
-    user = request.user
-
-    if not has_global_access(user):
-        return Response(
-            {"detail": "Not authorized"},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    serializer = StaffProfileCreateSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-
-    with transaction.atomic():
-        staff = serializer.save()
-
-    return Response(
-        StaffProfileListSerializer(staff).data,
-        status=status.HTTP_201_CREATED,
-    )
 
 
 @api_view(["PUT"])
@@ -136,3 +135,22 @@ def update_user_roles(request, pk):
     return Response(StaffProfileListSerializer(staff).data)
 
     return Response(StaffProfileListSerializer(staff).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_branches(request):
+    branches = Branch.objects.filter(is_active=True).order_by("name")
+
+    data: list[dict[str, Any]] = []
+
+    for branch in branches:
+        data.append(
+            {
+                "id": int(branch.pk),
+                "name": str(branch.name),
+                "code": str(branch.code or ""),
+            }
+        )
+
+    return Response(data)
