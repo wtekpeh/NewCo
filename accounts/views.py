@@ -41,6 +41,10 @@ def get_current_user(request):
         assignment.role == "branch_manager" for assignment in active_branch_roles
     )
 
+    can_update_batch_any = has_global_access(user) or any(
+        assignment.role == "branch_manager" for assignment in active_branch_roles
+    )
+
     return Response(
         {
             "id": user.id,
@@ -49,6 +53,7 @@ def get_current_user(request):
             "global_role": user.global_role,
             "can_recalibrate": has_global_access(user),
             "can_create_batch_any": can_create_batch_any,
+            "can_update_batch": can_update_batch_any,
             "branch_roles": branch_roles_data,
         }
     )
