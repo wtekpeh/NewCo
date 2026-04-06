@@ -11,4 +11,35 @@ urlpatterns = [
         name="accounts-update-user-roles",
     ),
     path("branches/", views.list_branches, name="accounts-list-branches"),
+    # branch manager
+    path(
+        "branch-manager/staff/",
+        views.branch_manager_list_staff,
+        name="branch-manager-list-staff",
+    ),
+    path(
+        "branch-manager/branches/",
+        views.branch_manager_list_branches,
+        name="branch-manager-list-branches",
+    ),
+    path(
+        "branch-manager/user-search/",
+        views.branch_manager_user_search,
+        name="branch-manager-user-search",
+    ),
+    path(
+        "branch-manager/branch-roles/",
+        views.branch_manager_create_assignment,
+        name="branch-manager-create-assignment",
+    ),
+    path(
+        "branch-manager/branch-roles/<int:assignment_id>/",
+        views.branch_manager_update_assignment,
+        name="branch-manager-update-assignment",
+    ),
+    path(
+        "branch-manager/branch-roles/<int:assignment_id>/",
+        views.branch_manager_update_assignment,
+        name="branch-manager-update-assignment",
+    ),
 ]

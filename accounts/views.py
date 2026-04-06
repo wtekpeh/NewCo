@@ -5,13 +5,17 @@ from typing import Any, cast
 
 
 from rest_framework import status
-from django.db import transaction
+from django.db import transaction, models
 
 from accounts.models import StaffProfile, BranchRoleAssignment, Branch
+from accounts.permissions import get_managed_branch_ids, has_any_managed_branch
 from accounts.serializers import (
     StaffProfileListSerializer,
-    StaffProfileCreateSerializer,
     StaffRoleUpdateSerializer,
+    BranchManagerAssignmentListSerializer,
+    BranchManagerUserSearchSerializer,
+    BranchManagerAssignmentCreateSerializer,
+    BranchManagerAssignmentUpdateSerializer,
 )
 
 from accounts.permissions import has_global_access
@@ -159,3 +163,279 @@ def list_branches(request):
         )
 
     return Response(data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def branch_manager_list_staff(request):
+    user = request.user
+
+    # Must be a branch manager
+    if not has_any_managed_branch(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    managed_branch_ids = get_managed_branch_ids(user)
+
+    queryset = BranchRoleAssignment.objects.filter(
+        branch_id__in=managed_branch_ids,
+        role__in=["chef", "kitchen_staff"],
+        is_active=True,
+        branch__is_active=True,
+        staff_profile__is_active=True,
+    ).select_related("branch", "staff_profile")
+
+    search = (request.query_params.get("search") or "").strip()
+    branch_id = request.query_params.get("branch")
+    role = (request.query_params.get("role") or "").strip()
+
+    if branch_id:
+        try:
+            branch_id_int = int(branch_id)
+        except ValueError:
+            return Response(
+                {"detail": "Invalid branch filter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if branch_id_int not in managed_branch_ids:
+            return Response(
+                {"detail": "Not authorized for this branch."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        queryset = queryset.filter(branch_id=branch_id_int)
+
+    if role:
+        if role not in ["chef", "kitchen_staff"]:
+            return Response(
+                {"detail": "Invalid role filter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        queryset = queryset.filter(role=role)
+
+    if search:
+        queryset = queryset.filter(
+            models.Q(staff_profile__full_name__icontains=search)
+            | models.Q(staff_profile__email__icontains=search)
+            | models.Q(staff_profile__username__icontains=search)
+        )
+
+    queryset = queryset.order_by(
+        "branch__name",
+        "role",
+        "staff_profile__full_name",
+    )
+
+    serializer = BranchManagerAssignmentListSerializer(queryset, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def branch_manager_list_branches(request):
+    user = request.user
+
+    if not has_any_managed_branch(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    managed_branch_ids = get_managed_branch_ids(user)
+
+    branches = Branch.objects.filter(
+        id__in=managed_branch_ids,
+        is_active=True,
+    ).order_by("name")
+
+    data = [
+        {
+            "id": int(branch.pk),
+            "name": str(branch.name),
+            "code": str(branch.code or ""),
+        }
+        for branch in branches
+    ]
+
+    return Response(data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def branch_manager_user_search(request):
+    user = request.user
+
+    if not has_any_managed_branch(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    search = (request.query_params.get("search") or "").strip()
+
+    queryset = StaffProfile.objects.filter(is_active=True)
+
+    if search:
+        queryset = queryset.filter(
+            models.Q(full_name__icontains=search)
+            | models.Q(email__icontains=search)
+            | models.Q(username__icontains=search)
+        )
+
+    queryset = queryset.order_by("full_name", "email")[:20]
+
+    serializer = BranchManagerUserSearchSerializer(queryset, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def branch_manager_create_assignment(request):
+    user = request.user
+
+    if not has_any_managed_branch(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = BranchManagerAssignmentCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    validated_data = cast(dict[str, Any], serializer.validated_data)
+
+    staff_profile_id = validated_data["staff_profile_id"]
+    branch_id = validated_data["branch_id"]
+    role = validated_data["role"]
+
+    managed_branch_ids = get_managed_branch_ids(user)
+
+    if branch_id not in managed_branch_ids:
+        return Response(
+            {"detail": "Not authorized for this branch."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    with transaction.atomic():
+        existing_assignment = (
+            BranchRoleAssignment.objects.select_for_update()
+            .filter(
+                staff_profile_id=staff_profile_id,
+                branch_id=branch_id,
+            )
+            .exists()
+        )
+
+        if existing_assignment:
+            return Response(
+                {"detail": "This user already has an assignment in this branch."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        assignment = BranchRoleAssignment.objects.create(
+            staff_profile_id=staff_profile_id,
+            branch_id=branch_id,
+            role=role,
+            is_active=True,
+        )
+
+    assignment = BranchRoleAssignment.objects.select_related(
+        "branch",
+        "staff_profile",
+    ).get(id=assignment.pk)
+
+    response_serializer = BranchManagerAssignmentListSerializer(assignment)
+    return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+def branch_manager_update_assignment(request, assignment_id):
+    user = request.user
+
+    if not has_any_managed_branch(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        assignment = BranchRoleAssignment.objects.select_related(
+            "branch",
+            "staff_profile",
+        ).get(id=assignment_id)
+    except BranchRoleAssignment.DoesNotExist:
+        return Response(
+            {"detail": "Assignment not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    managed_branch_ids = get_managed_branch_ids(user)
+
+    if int(assignment.branch.pk) not in managed_branch_ids:
+        return Response(
+            {"detail": "Not authorized for this assignment."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if assignment.role not in ["chef", "kitchen_staff"]:
+        return Response(
+            {"detail": "Only chef and kitchen staff assignments can be updated here."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = BranchManagerAssignmentUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    validated_data = cast(dict[str, Any], serializer.validated_data)
+    assignment.role = validated_data["role"]
+    assignment.save(update_fields=["role", "updated_at"])
+
+    assignment.refresh_from_db()
+
+    response_serializer = BranchManagerAssignmentListSerializer(assignment)
+    return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def branch_manager_delete_assignment(request, assignment_id):
+    user = request.user
+
+    if not has_any_managed_branch(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        assignment = BranchRoleAssignment.objects.select_related(
+            "branch",
+            "staff_profile",
+        ).get(pk=assignment_id)
+    except BranchRoleAssignment.DoesNotExist:
+        return Response(
+            {"detail": "Assignment not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    managed_branch_ids = get_managed_branch_ids(user)
+
+    if int(assignment.branch.pk) not in managed_branch_ids:
+        return Response(
+            {"detail": "Not authorized for this assignment."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if assignment.role not in ["chef", "kitchen_staff"]:
+        return Response(
+            {"detail": "Only chef and kitchen staff assignments can be deleted here."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    assignment.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)

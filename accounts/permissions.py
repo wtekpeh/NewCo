@@ -25,6 +25,25 @@ def has_global_access(user):
     return is_boss(user) or is_managing_director(user)
 
 
+def get_managed_branch_ids(user):
+    if not user or not getattr(user, "is_authenticated", False):
+        return []
+
+    return list(
+        BranchRoleAssignment.objects.filter(
+            staff_profile=user,
+            role=BranchRole.BRANCH_MANAGER,
+            is_active=True,
+            branch__is_active=True,
+            staff_profile__is_active=True,
+        ).values_list("branch_id", flat=True)
+    )
+
+
+def has_any_managed_branch(user):
+    return len(get_managed_branch_ids(user)) > 0
+
+
 def has_branch_role(user, branch, role):
     if not user or not getattr(user, "is_authenticated", False):
         return False

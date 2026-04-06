@@ -24,6 +24,83 @@ class BranchRoleAssignmentSerializer(serializers.ModelSerializer):
         ]
 
 
+class BranchManagerAssignmentListSerializer(serializers.ModelSerializer):
+    assignment_id = serializers.IntegerField(source="id", read_only=True)
+    staff_profile_id = serializers.IntegerField(
+        source="staff_profile.id", read_only=True
+    )
+    full_name = serializers.CharField(source="staff_profile.full_name", read_only=True)
+    email = serializers.CharField(source="staff_profile.email", read_only=True)
+    username = serializers.CharField(source="staff_profile.username", read_only=True)
+    staff_profile_is_active = serializers.BooleanField(
+        source="staff_profile.is_active",
+        read_only=True,
+    )
+    branch_id = serializers.IntegerField(source="branch.id", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+
+    class Meta:
+        model = BranchRoleAssignment
+        fields = [
+            "assignment_id",
+            "staff_profile_id",
+            "full_name",
+            "email",
+            "username",
+            "staff_profile_is_active",
+            "branch_id",
+            "branch_name",
+            "role",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class BranchManagerUserSearchSerializer(serializers.ModelSerializer):
+    staff_profile_id = serializers.IntegerField(source="id", read_only=True)
+
+    class Meta:
+        model = StaffProfile
+        fields = [
+            "staff_profile_id",
+            "full_name",
+            "email",
+            "username",
+            "is_active",
+        ]
+
+
+class BranchManagerAssignmentCreateSerializer(serializers.Serializer):
+    staff_profile_id = serializers.IntegerField()
+    branch_id = serializers.IntegerField()
+    role = serializers.ChoiceField(
+        choices=[
+            (BranchRole.CHEF, "Chef"),
+            (BranchRole.KITCHEN_STAFF, "Kitchen Staff"),
+        ]
+    )
+
+    def validate_staff_profile_id(self, value):
+        if not StaffProfile.objects.filter(id=value, is_active=True).exists():
+            raise serializers.ValidationError("Selected staff does not exist.")
+        return value
+
+    def validate_branch_id(self, value):
+        if not Branch.objects.filter(id=value, is_active=True).exists():
+            raise serializers.ValidationError("Selected branch does not exist.")
+        return value
+
+
+class BranchManagerAssignmentUpdateSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(
+        choices=[
+            (BranchRole.CHEF, "Chef"),
+            (BranchRole.KITCHEN_STAFF, "Kitchen Staff"),
+        ]
+    )
+
+
 class StaffProfileListSerializer(serializers.ModelSerializer):
     branch_roles = BranchRoleAssignmentSerializer(many=True, read_only=True)
 
