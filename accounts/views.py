@@ -5,6 +5,7 @@ from typing import Any, cast
 
 
 from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
 from django.db import transaction, models
 
 from accounts.models import StaffProfile, BranchRoleAssignment, Branch
@@ -19,6 +20,12 @@ from accounts.serializers import (
 )
 
 from accounts.permissions import has_global_access
+
+
+class AdminListPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
 @api_view(["GET"])
@@ -75,10 +82,55 @@ def list_users(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
+    search = (request.query_params.get("search") or "").strip()
+    role = (request.query_params.get("role") or "").strip()
+    branch = request.query_params.get("branch")
+
     users = StaffProfile.objects.all().prefetch_related("branch_roles__branch")
 
-    serializer = StaffProfileListSerializer(users, many=True)
-    return Response(serializer.data)
+    if search:
+        users = users.filter(
+            models.Q(full_name__icontains=search)
+            | models.Q(email__icontains=search)
+            | models.Q(username__icontains=search)
+        )
+
+    if role:
+        if role in ["boss", "managing_director", "none"]:
+            users = users.filter(global_role=role)
+        elif role in ["branch_manager", "chef", "kitchen_staff"]:
+            users = users.filter(
+                branch_roles__role=role,
+                branch_roles__is_active=True,
+                branch_roles__branch__is_active=True,
+            )
+        else:
+            return Response(
+                {"detail": "Invalid role filter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    if branch:
+        try:
+            branch_id = int(branch)
+        except ValueError:
+            return Response(
+                {"detail": "Invalid branch filter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        users = users.filter(
+            branch_roles__branch_id=branch_id,
+            branch_roles__branch__is_active=True,
+        )
+
+    users = users.distinct().order_by("full_name", "email")
+
+    paginator = AdminListPagination()
+    paginated_users = paginator.paginate_queryset(users, request)
+    serializer = StaffProfileListSerializer(paginated_users, many=True)
+
+    return paginator.get_paginated_response(serializer.data)
 
 
 @api_view(["PUT"])
@@ -230,8 +282,11 @@ def branch_manager_list_staff(request):
         "staff_profile__full_name",
     )
 
-    serializer = BranchManagerAssignmentListSerializer(queryset, many=True)
-    return Response(serializer.data)
+    paginator = AdminListPagination()
+    paginated_queryset = paginator.paginate_queryset(queryset, request)
+    serializer = BranchManagerAssignmentListSerializer(paginated_queryset, many=True)
+
+    return paginator.get_paginated_response(serializer.data)
 
 
 @api_view(["GET"])
@@ -277,7 +332,16 @@ def branch_manager_user_search(request):
 
     search = (request.query_params.get("search") or "").strip()
 
-    queryset = StaffProfile.objects.filter(is_active=True)
+    managed_branch_ids = get_managed_branch_ids(user)
+
+    # Exclude users already assigned to ANY managed branch
+    assigned_user_ids = BranchRoleAssignment.objects.filter(
+        branch_id__in=managed_branch_ids
+    ).values_list("staff_profile_id", flat=True)
+
+    queryset = StaffProfile.objects.filter(is_active=True).exclude(
+        id__in=assigned_user_ids
+    )
 
     if search:
         queryset = queryset.filter(
