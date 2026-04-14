@@ -72,3 +72,42 @@ class ActivityEvent(models.Model):
 
     def __str__(self):
         return f"{self.action} | {self.target_type} | {self.target_id or '-'}"
+
+
+class Notification(models.Model):
+    event = models.ForeignKey(
+        "activity.ActivityEvent",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+
+    recipient_staff_profile = models.ForeignKey(
+        "accounts.StaffProfile",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+
+    is_read = models.BooleanField(default=False)
+    emailed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "recipient_staff_profile"],
+                name="uniq_event_recipient_notification",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["recipient_staff_profile", "is_read"]),
+            models.Index(fields=["event"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        event_pk = self.event.pk if self.event else None
+        recipient_pk = (
+            self.recipient_staff_profile.pk if self.recipient_staff_profile else None
+        )
+        return f"event={event_pk} recipient={recipient_pk}"
