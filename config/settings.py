@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "recipes",
     "cooking",
     "accounts",
+    "activity",
     "drf_spectacular",
 ]
 

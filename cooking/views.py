@@ -3,9 +3,12 @@ import pandas as pd
 from django.db import transaction
 from django.utils import timezone
 
+from activity.services import emit_activity_event
+from activity.models import ActivityAction, ActivityTargetType
+
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from recipes.models import Recipe, RecipeIngredient
@@ -234,40 +237,40 @@ def create_cook_batch(request):
         scales_df = load_scales_df()
         use_scales = scales_df is not None and not scales_df.empty
 
-        if use_scales:
-            df_pred = predict_with_scales(
-                df_recipe=df,
-                n_people=p["n_people"],
-                df_scales=scales_df,
-                protein_type=p["protein"],
-                protein_set=protein_set,
-            )
+        for p in multi_proteins:
+            if use_scales:
+                df_pred = predict_with_scales(
+                    df_recipe=df,
+                    n_people=p["n_people"],
+                    df_scales=scales_df,
+                    protein_type=p["protein"],
+                    protein_set=protein_set,
+                )
 
-            df_pred["pred_g"] = df_pred["pred_g_new"]
-            df_pred["pred_kg"] = df_pred["pred_kg_new"]
-        else:
-            df_pred = predict_ingredients(
-                df_recipe=df,
-                n_people=p["n_people"],
-                protein_type=p["protein"],
-                protein_set=protein_set,
-            )
+                # normalize columns
+                df_pred["pred_g"] = df_pred["pred_g_new"]
+                df_pred["pred_kg"] = df_pred["pred_kg_new"]
+            else:
+                df_pred = predict_ingredients(
+                    df_recipe=df,
+                    n_people=p["n_people"],
+                    protein_type=p["protein"],
+                    protein_set=protein_set,
+                )
 
             pred_frames.append(df_pred)
 
-        pred = sum_prediction_frames(pred_frames)
+        pred_sum = sum_prediction_frames(pred_frames)
 
         # Bring back recipe params (q10_g, b, c_g, bounds, option_group/value, etc.)
         # sum_prediction_frames returns only ingredient/group + pred_g/pred_kg
-        pred_sum = pred
-
         merge_keys = ["ingredient"]
         if "group" in df.columns and "group" in pred_sum.columns:
             merge_keys = ["ingredient", "group"]
 
         pred = df.merge(pred_sum, on=merge_keys, how="left")
 
-        # Safety: if something didn't match, fill with 0 (shouldn't happen if ingredient names match)
+        # Safety: if something didn't match, fill with 0
         pred["pred_g"] = pred["pred_g"].fillna(0.0)
         pred["pred_kg"] = pred["pred_kg"].fillna(0.0)
 
@@ -382,6 +385,30 @@ def create_cook_batch(request):
 
         CookBatchItem.objects.bulk_create(item_objs)
 
+        transaction.on_commit(
+            lambda: emit_activity_event(
+                actor=request.user,
+                action=ActivityAction.COOK_BATCH_CREATED,
+                target_type=ActivityTargetType.COOK_BATCH,
+                target_id=int(batch.pk),
+                branch=branch,
+                message=(
+                    f"{request.user.full_name or request.user.email or request.user.username} "
+                    f"created cook batch #{int(batch.pk)}"
+                ),
+                metadata={
+                    "batch_id": int(batch.pk),
+                    "recipe_id": int(recipe.pk),
+                    "recipe_name": recipe.name,
+                    "branch_id": int(branch.pk),
+                    "branch_name": branch.name,
+                    "n_people": n_people,
+                    "protein_type": protein_type,
+                    "status": batch.status,
+                },
+            )
+        )
+
     # Return AFTER atomic finishes
     batch.refresh_from_db()
     return Response(CookBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
@@ -469,6 +496,44 @@ def update_cook_batch_actuals(request, batch_id: int):
         if finalize:
             batch.status = "final"
             batch.save(update_fields=["status"])
+
+        event_action = (
+            ActivityAction.COOK_BATCH_FINALIZED
+            if finalize
+            else ActivityAction.COOK_BATCH_ACTUALS_UPDATED
+        )
+
+        event_message = (
+            f"{request.user.full_name or request.user.email or request.user.username} "
+            f"finalized cook batch #{int(batch.pk)}"
+            if finalize
+            else (
+                f"{request.user.full_name or request.user.email or request.user.username} "
+                f"updated actuals for cook batch #{int(batch.pk)}"
+            )
+        )
+
+        transaction.on_commit(
+            lambda: emit_activity_event(
+                actor=request.user,
+                action=event_action,
+                target_type=ActivityTargetType.COOK_BATCH,
+                target_id=int(batch.pk),
+                branch=batch.branch,
+                message=event_message,
+                metadata={
+                    "batch_id": int(batch.pk),
+                    "recipe_id": int(batch.recipe.pk),
+                    "recipe_name": batch.recipe.name,
+                    "branch_id": int(batch.branch.pk),
+                    "branch_name": batch.branch.name,
+                    "status": batch.status,
+                    "finalize": finalize,
+                    "updated_item_ids": payload_ids,
+                    "updated_item_count": len(payload_ids),
+                },
+            )
+        )
 
     batch.refresh_from_db()
     return Response(CookBatchSerializer(batch).data, status=status.HTTP_200_OK)
@@ -603,6 +668,26 @@ def recalibrate_ingredient_scales(request):
         )
 
     if saved_df.empty:
+        transaction.on_commit(
+            lambda: emit_activity_event(
+                actor=request.user,
+                action=ActivityAction.INGREDIENT_SCALES_RECALIBRATED,
+                target_type=ActivityTargetType.INGREDIENT_SCALE,
+                target_id=None,
+                branch=None,
+                message=(
+                    f"{request.user.full_name or request.user.email or request.user.username} "
+                    f"ran ingredient scale recalibration"
+                ),
+                metadata={
+                    "tau_days": tau_days,
+                    "branch_id": branch_id,
+                    "recipe_id": recipe_id,
+                    "scales_updated": 0,  # or len(items) in the final success path
+                },
+            )
+        )
+
         return Response(
             {
                 "message": "No scales were generated.",
@@ -614,7 +699,6 @@ def recalibrate_ingredient_scales(request):
             },
             status=status.HTTP_200_OK,
         )
-
     items = []
     for _, row in saved_df.iterrows():
         items.append(
@@ -625,6 +709,26 @@ def recalibrate_ingredient_scales(request):
                 "sample_count": int(row["sample_count"]),
                 "computed_at": str(row["computed_at"]),
             }
+        )
+
+        transaction.on_commit(
+            lambda: emit_activity_event(
+                actor=request.user,
+                action=ActivityAction.INGREDIENT_SCALES_RECALIBRATED,
+                target_type=ActivityTargetType.INGREDIENT_SCALE,
+                target_id=None,
+                branch=None,
+                message=(
+                    f"{request.user.full_name or request.user.email or request.user.username} "
+                    f"ran ingredient scale recalibration"
+                ),
+                metadata={
+                    "tau_days": tau_days,
+                    "branch_id": branch_id,
+                    "recipe_id": recipe_id,
+                    "scales_updated": 0,  # or len(items) in the final success path
+                },
+            )
         )
 
     return Response(
