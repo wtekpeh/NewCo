@@ -103,3 +103,10 @@ def can_update_batch(user, branch):
         return True
 
     return is_branch_manager(user, branch)
+
+
+def can_manage_recipes(user):
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+
+    return has_global_access(user)

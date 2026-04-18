@@ -4,11 +4,19 @@ from django.utils import timezone
 
 class ActivityAction(models.TextChoices):
     COOK_BATCH_CREATED = "cook_batch_created", "Cook Batch Created"
+
     COOK_BATCH_ACTUALS_UPDATED = (
         "cook_batch_actuals_updated",
         "Cook Batch Actuals Updated",
     )
+
     COOK_BATCH_FINALIZED = "cook_batch_finalized", "Cook Batch Finalized"
+
+    COOK_BATCH_POST_REVIEW_UPDATED = (
+        "cook_batch_post_review_updated",
+        "Cook Batch Post Review Updated",
+    )
+
     INGREDIENT_SCALES_RECALIBRATED = (
         "ingredient_scales_recalibrated",
         "Ingredient Scales Recalibrated",

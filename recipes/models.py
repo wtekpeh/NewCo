@@ -8,6 +8,7 @@ class Recipe(models.Model):
     A meal bundle, e.g. "Jollof + Kelewele + Protein".
     Each recipe has many RecipeIngredient rows that define scaling params.
     """
+
     name = models.CharField(max_length=200, unique=True)
     description = models.TextField(blank=True)
 
@@ -34,6 +35,7 @@ class RecipeIngredient(models.Model):
       - option_value: e.g. "FRESH CHICKEN"
       If an ingredient has option_group set, it is only included when options match.
     """
+
     GROUP_CHOICES = (
         ("bulk", "Bulk"),
         ("medium", "Medium"),
@@ -43,9 +45,13 @@ class RecipeIngredient(models.Model):
         ("other", "Other"),
     )
 
-    recipe = models.ForeignKey(Recipe, on_delete=models.CASCADE, related_name="ingredients")
+    recipe = models.ForeignKey(
+        Recipe, on_delete=models.CASCADE, related_name="ingredients"
+    )
 
-    item_no = models.IntegerField(null=True, blank=True)  # optional: preserve your sheet numbering
+    item_no = models.IntegerField(
+        null=True, blank=True
+    )  # optional: preserve your sheet numbering
     name = models.CharField(max_length=200)
 
     # scaling params (all grams)
@@ -53,27 +59,18 @@ class RecipeIngredient(models.Model):
     b = models.FloatField(default=1.0)
     c_g = models.FloatField(default=0.0)
 
-        # scaling params (all grams)
-    q10_g = models.FloatField()
-    b = models.FloatField(default=1.0)
-    c_g = models.FloatField(default=0.0)
-
     # safety guardrails (grams per person)
     min_per_person_g = models.FloatField(
-        null=True,
-        blank=True,
-        help_text="Minimum grams per person (safety floor)"
+        null=True, blank=True, help_text="Minimum grams per person (safety floor)"
     )
     max_per_person_g = models.FloatField(
-        null=True,
-        blank=True,
-        help_text="Maximum grams per person (safety ceiling)"
+        null=True, blank=True, help_text="Maximum grams per person (safety ceiling)"
     )
 
     group = models.CharField(max_length=20, choices=GROUP_CHOICES, default="other")
 
     # option logic (for protein choice etc.)
-    option_group = models.CharField(max_length=50, blank=True)   # e.g. "protein"
+    option_group = models.CharField(max_length=50, blank=True)  # e.g. "protein"
     option_value = models.CharField(max_length=200, blank=True)  # e.g. "FRESH CHICKEN"
 
     is_active = models.BooleanField(default=True)

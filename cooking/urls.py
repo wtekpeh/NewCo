@@ -14,6 +14,11 @@ urlpatterns = [
         name="cooking-batch-actuals",
     ),
     path(
+        "cooking/batches/<int:batch_id>/post-review/",
+        views.post_review_update_cook_batch,
+        name="cooking-batch-post-review",
+    ),
+    path(
         "cooking/batches/create/", views.create_cook_batch, name="cooking-batch-create"
     ),
     path(

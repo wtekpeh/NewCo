@@ -21,6 +21,7 @@ from .serializers import (
     CookBatchSerializer,
     CookBatchCreateRequestSerializer,
     CookBatchActualsUpdateRequestSerializer,
+    CookBatchPostReviewUpdateRequestSerializer,
 )
 
 from drf_spectacular.utils import extend_schema, OpenApiResponse
@@ -531,6 +532,128 @@ def update_cook_batch_actuals(request, batch_id: int):
                     "finalize": finalize,
                     "updated_item_ids": payload_ids,
                     "updated_item_count": len(payload_ids),
+                },
+            )
+        )
+
+    batch.refresh_from_db()
+    return Response(CookBatchSerializer(batch).data, status=status.HTTP_200_OK)
+
+
+@extend_schema(
+    methods=["PATCH"],
+    request=CookBatchPostReviewUpdateRequestSerializer,
+    responses={
+        200: CookBatchSerializer,
+        400: OpenApiResponse(description="Bad Request"),
+        403: OpenApiResponse(description="Forbidden"),
+        404: OpenApiResponse(description="Batch not found / item not in batch"),
+    },
+)
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def post_review_update_cook_batch(request, batch_id: int):
+    """
+    PATCH /api/cooking/batches/{batch_id}/post-review/
+
+    Privileged correction flow for already-finalized cook batches.
+
+    Atomic guarantee:
+      - Either all provided item corrections are saved, or none are saved.
+    """
+    req = CookBatchPostReviewUpdateRequestSerializer(data=request.data)
+    if not req.is_valid():
+        return Response(req.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    items_payload = req.validated_data["items"]
+    batch_note = req.validated_data.get("notes", "")
+
+    try:
+        batch = CookBatch.objects.get(pk=batch_id)
+    except CookBatch.DoesNotExist:
+        return Response(
+            {"detail": "Batch not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to perform post-review updates."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if batch.status != "final":
+        return Response(
+            {"detail": "Post-review updates are only allowed for finalized batches."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    payload_ids = [x["id"] for x in items_payload]
+    if len(payload_ids) != len(set(payload_ids)):
+        return Response(
+            {"detail": "Duplicate item id found in payload."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        qs = CookBatchItem.objects.select_for_update().filter(
+            batch=batch,
+            id__in=payload_ids,
+        )
+
+        found_ids = set(qs.values_list("id", flat=True))
+        missing = [i for i in payload_ids if i not in found_ids]
+        if missing:
+            return Response(
+                {
+                    "detail": "Some items do not belong to this batch.",
+                    "missing_item_ids": missing,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        payload_map = {x["id"]: x for x in items_payload}
+
+        to_update = []
+        for obj in qs:
+            p = payload_map[obj.id]
+            obj.actual_g = float(p["actual_g"])
+            obj.actual_kg = float(p["actual_g"]) / 1000.0
+            if "notes" in p:
+                obj.notes = p.get("notes", "")
+            to_update.append(obj)
+
+        CookBatchItem.objects.bulk_update(
+            to_update,
+            ["actual_g", "actual_kg", "notes"],
+        )
+
+        if batch_note:
+            batch.notes = batch_note
+            batch.save(update_fields=["notes"])
+
+        transaction.on_commit(
+            lambda: emit_activity_event(
+                actor=request.user,
+                action=ActivityAction.COOK_BATCH_POST_REVIEW_UPDATED,
+                target_type=ActivityTargetType.COOK_BATCH,
+                target_id=int(batch.pk),
+                branch=batch.branch,
+                message=(
+                    f"{request.user.full_name or request.user.email or request.user.username} "
+                    f"performed post-review updates on finalized cook batch #{int(batch.pk)}"
+                ),
+                metadata={
+                    "batch_id": int(batch.pk),
+                    "recipe_id": int(batch.recipe.pk),
+                    "recipe_name": batch.recipe.name,
+                    "branch_id": int(batch.branch.pk),
+                    "branch_name": batch.branch.name,
+                    "status": batch.status,
+                    "post_review": True,
+                    "updated_item_ids": payload_ids,
+                    "updated_item_count": len(payload_ids),
+                    "batch_note_updated": bool(batch_note),
                 },
             )
         )

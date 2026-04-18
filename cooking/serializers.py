@@ -83,3 +83,14 @@ class CookBatchActualItemUpdateSerializer(serializers.Serializer):
 class CookBatchActualsUpdateRequestSerializer(serializers.Serializer):
     items = CookBatchActualItemUpdateSerializer(many=True)
     finalize = serializers.BooleanField(required=False, default=False)
+
+
+class CookBatchPostReviewItemUpdateSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    actual_g = serializers.FloatField(min_value=0)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class CookBatchPostReviewUpdateRequestSerializer(serializers.Serializer):
+    items = CookBatchPostReviewItemUpdateSerializer(many=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
