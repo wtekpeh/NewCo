@@ -64,23 +64,33 @@ def list_recipes(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_protein_choices(request):
+    recipe_id = request.query_params.get("recipe_id")
+
+    qs = RecipeIngredient.objects.filter(
+        recipe__is_active=True,
+        is_active=True,
+    )
+
+    if recipe_id not in (None, ""):
+        try:
+            recipe_id = int(recipe_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "recipe_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = qs.filter(recipe_id=recipe_id)
+
     protein_option_values = list(
-        RecipeIngredient.objects.filter(
-            recipe__is_active=True,
-            is_active=True,
-            option_group__iexact="protein",
-        )
+        qs.filter(option_group__iexact="protein")
         .exclude(option_value__isnull=True)
         .exclude(option_value__exact="")
         .values_list("option_value", flat=True)
     )
 
     protein_group_names = list(
-        RecipeIngredient.objects.filter(
-            recipe__is_active=True,
-            is_active=True,
-            group="protein",
-        )
+        qs.filter(group="protein")
         .exclude(name__isnull=True)
         .exclude(name__exact="")
         .values_list("name", flat=True)
