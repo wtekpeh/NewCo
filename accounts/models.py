@@ -12,6 +12,7 @@ class BranchRole(models.TextChoices):
     BRANCH_MANAGER = "branch_manager", "Branch Manager"
     CHEF = "chef", "Chef"
     KITCHEN_STAFF = "kitchen_staff", "Kitchen Staff"
+    STORE = "store", "Store"
 
 
 class Branch(models.Model):

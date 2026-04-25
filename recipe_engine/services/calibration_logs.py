@@ -174,3 +174,97 @@ def build_calibration_logs_df(
             "notes",
         ]
     ]
+
+
+def build_recent_calibration_logs_df(
+    branch_id: Optional[int] = None,
+    recipe_id: Optional[int] = None,
+    window_batches: int = 20,
+) -> pd.DataFrame:
+    """
+    Build calibration DataFrame using ONLY the most recent N batches.
+
+    This replaces time-based decay with event-based learning.
+    """
+
+    qs = build_calibration_logs_qs()
+
+    if branch_id is not None:
+        qs = qs.filter(batch__branch_id=branch_id)
+
+    if recipe_id is not None:
+        qs = qs.filter(batch__recipe_id=recipe_id)
+
+    # 🔥 KEY CHANGE: get latest N batches first
+    recent_batch_ids = (
+        qs.values_list("batch_id", flat=True)
+        .distinct()
+        .order_by("-batch__created_at")[:window_batches]
+    )
+
+    qs = qs.filter(batch_id__in=list(recent_batch_ids))
+
+    rows = qs.values(
+        "id",
+        "ingredient",
+        "group",
+        "q10_g",
+        "b",
+        "c_g",
+        "pred_g",
+        "pred_kg",
+        "final_g",
+        "final_kg",
+        "actual_g",
+        "actual_kg",
+        "notes",
+        "batch_id",
+        "batch__recipe_id",
+        "batch__branch_id",
+        "batch__n_people",
+        "batch__protein_type",
+        "batch__created_at",
+    )
+
+    df = pd.DataFrame(list(rows))
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.rename(
+        columns={
+            "id": "item_id",
+            "batch__recipe_id": "recipe_id",
+            "batch__branch_id": "branch_id",
+            "batch__n_people": "n_people",
+            "batch__protein_type": "protein_type",
+            "batch__created_at": "created_at",
+        }
+    )
+
+    df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+
+    df["day"] = (
+        df["created_at"] - pd.Timestamp("1970-01-01", tz="UTC")
+    ).dt.total_seconds() / 86400.0
+
+    numeric_cols = [
+        "q10_g",
+        "b",
+        "c_g",
+        "pred_g",
+        "pred_kg",
+        "final_g",
+        "final_kg",
+        "actual_g",
+        "actual_kg",
+        "n_people",
+        "day",
+    ]
+
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df[df["actual_g"].notna() & (df["actual_g"] > 0)].copy()
+
+    return df

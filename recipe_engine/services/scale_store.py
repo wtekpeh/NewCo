@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from cooking.models import IngredientScale
-from recipe_engine.services.calibration_logs import build_calibration_logs_df
+from recipe_engine.services.calibration_logs import build_recent_calibration_logs_df
 
 
 def save_scales(
@@ -122,10 +122,36 @@ def load_scales_df(
     return df.reset_index(drop=True)
 
 
+def load_best_scales_df(
+    branch_id: Optional[int] = None,
+    recipe_id: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Load best available scales using fallback hierarchy:
+      1. branch + recipe
+      2. recipe only
+      3. global
+    """
+
+    if branch_id is not None and recipe_id is not None:
+        df = load_scales_df(branch_id=branch_id, recipe_id=recipe_id)
+        if not df.empty:
+            return df
+
+    if recipe_id is not None:
+        df = load_scales_df(branch_id=None, recipe_id=recipe_id)
+        if not df.empty:
+            return df
+
+    return load_scales_df(branch_id=None, recipe_id=None)
+
+
 def recalibrate_and_store(
     tau_days: float = 14.0,
     branch_id: Optional[int] = None,
     recipe_id: Optional[int] = None,
+    window_batches: int = 30,
+    min_batches: int = 20,
 ) -> pd.DataFrame:
     """
     Convenience helper:
@@ -138,12 +164,20 @@ def recalibrate_and_store(
     """
     from recipe_engine.services.calibration_service import run_calibration
 
-    logs_df = build_calibration_logs_df(
+    logs_df = build_recent_calibration_logs_df(
         branch_id=branch_id,
         recipe_id=recipe_id,
+        window_batches=window_batches,
     )
 
     if logs_df.empty:
+        return pd.DataFrame(
+            columns=["ingredient", "s", "tau_days", "sample_count", "computed_at"]
+        )
+
+    unique_batches = logs_df["batch_id"].nunique()
+
+    if unique_batches < min_batches:
         return pd.DataFrame(
             columns=["ingredient", "s", "tau_days", "sample_count", "computed_at"]
         )
@@ -152,6 +186,8 @@ def recalibrate_and_store(
         tau_days=tau_days,
         branch_id=branch_id,
         recipe_id=recipe_id,
+        window_batches=window_batches,
+        min_batches=min_batches,
     )
 
     if scales_df.empty:
@@ -164,7 +200,7 @@ def recalibrate_and_store(
         tau_days=tau_days,
         branch_id=branch_id,
         recipe_id=recipe_id,
-        sample_count=len(logs_df),
+        sample_count=int(len(logs_df)),
     )
 
     return load_scales_df(branch_id=branch_id, recipe_id=recipe_id)

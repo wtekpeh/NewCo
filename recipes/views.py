@@ -24,7 +24,7 @@ from .serializers import (
 
 from recipe_engine.scaling import predict_ingredients
 from recipe_engine.scaling import predict_with_scales
-from recipe_engine.services.scale_store import load_scales_df
+from recipe_engine.services.scale_store import load_best_scales_df
 
 from drf_spectacular.utils import extend_schema
 from django.shortcuts import get_object_or_404
@@ -229,7 +229,10 @@ def predict_recipe(request, pk: int):
 
     # 5) Predict (adaptive if scales exist, otherwise fallback)
 
-    scales_df = load_scales_df()
+    scales_df = load_best_scales_df(
+        branch_id=None,
+        recipe_id=pk,
+    )
 
     use_scales = scales_df is not None and not scales_df.empty
 
@@ -295,7 +298,10 @@ def predict_recipe(request, pk: int):
 
     # 6) JSON response
     # Load scales once (same logic already used above)
-    scales_df = load_scales_df()
+    scales_df = load_best_scales_df(
+        branch_id=None,
+        recipe_id=pk,
+    )
     scale_map = {}
 
     if scales_df is not None and not scales_df.empty:

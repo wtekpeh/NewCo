@@ -92,6 +92,9 @@ def can_view_batch(user, branch):
     if is_chef(user, branch):
         return True
 
+    if is_store(user, branch):
+        return True  # filtering will happen in views
+
     return False
 
 
@@ -110,3 +113,7 @@ def can_manage_recipes(user):
         return False
 
     return has_global_access(user)
+
+
+def is_store(user, branch):
+    return has_branch_role(user, branch, BranchRole.STORE)

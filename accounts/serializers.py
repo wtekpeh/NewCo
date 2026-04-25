@@ -78,6 +78,7 @@ class BranchManagerAssignmentCreateSerializer(serializers.Serializer):
         choices=[
             (BranchRole.CHEF, "Chef"),
             (BranchRole.KITCHEN_STAFF, "Kitchen Staff"),
+            (BranchRole.STORE, "Store"),
         ]
     )
 
@@ -97,6 +98,7 @@ class BranchManagerAssignmentUpdateSerializer(serializers.Serializer):
         choices=[
             (BranchRole.CHEF, "Chef"),
             (BranchRole.KITCHEN_STAFF, "Kitchen Staff"),
+            (BranchRole.STORE, "Store"),
         ]
     )
 

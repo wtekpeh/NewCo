@@ -5,13 +5,18 @@ from typing import Optional
 import pandas as pd
 
 from recipe_engine.calibration import fit_scale_factors
-from recipe_engine.services.calibration_logs import build_calibration_logs_df
+from recipe_engine.services.calibration_logs import (
+    build_calibration_logs_df,
+    build_recent_calibration_logs_df,
+)
 
 
 def run_calibration(
     tau_days: float = 14.0,
     branch_id: Optional[int] = None,
     recipe_id: Optional[int] = None,
+    window_batches: int = 30,
+    min_batches: int = 20,
 ) -> pd.DataFrame:
     """
     Run calibration from historical CookBatch / CookBatchItem logs.
@@ -22,12 +27,21 @@ def run_calibration(
 
     Optional filters allow future branch-specific or recipe-specific learning.
     """
-    logs_df = build_calibration_logs_df(
+    logs_df = build_recent_calibration_logs_df(
         branch_id=branch_id,
         recipe_id=recipe_id,
+        window_batches=window_batches,
     )
 
     if logs_df.empty:
+        return pd.DataFrame(columns=["ingredient", "s"])
+
+    # 🔥 SAFEGUARD: ensure enough unique batches
+
+    unique_batches = logs_df["batch_id"].nunique()
+
+    if unique_batches < min_batches:
+        # Not enough data to trust recalibration
         return pd.DataFrame(columns=["ingredient", "s"])
 
     scales_df = fit_scale_factors(

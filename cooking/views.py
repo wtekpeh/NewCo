@@ -14,7 +14,7 @@ from rest_framework.response import Response
 from recipes.models import Recipe, RecipeIngredient
 from recipe_engine.scaling import predict_ingredients, sum_prediction_frames
 from recipe_engine.scaling import predict_with_scales
-from recipe_engine.services.scale_store import load_scales_df
+from recipe_engine.services.scale_store import load_best_scales_df
 
 from .models import CookBatch, CookBatchItem
 from .serializers import (
@@ -33,6 +33,7 @@ from accounts.permissions import (
     can_view_batch,
     can_update_batch,
     has_global_access,
+    is_store,
 )
 
 from recipe_engine.services.scale_store import recalibrate_and_store
@@ -235,7 +236,10 @@ def create_cook_batch(request):
     if protein_set and multi_proteins:
         pred_frames = []
 
-        scales_df = load_scales_df()
+        scales_df = load_best_scales_df(
+            branch_id=branch_id,
+            recipe_id=recipe_id,
+        )
         use_scales = scales_df is not None and not scales_df.empty
 
         for p in multi_proteins:
@@ -279,7 +283,10 @@ def create_cook_batch(request):
         protein_type = " + ".join([p["protein"] for p in multi_proteins])
         options["protein"] = protein_type
     else:
-        scales_df = load_scales_df()
+        scales_df = load_best_scales_df(
+            branch_id=branch_id,
+            recipe_id=recipe_id,
+        )
         use_scales = scales_df is not None and not scales_df.empty
 
         if use_scales:
@@ -498,6 +505,27 @@ def update_cook_batch_actuals(request, batch_id: int):
             batch.status = "final"
             batch.save(update_fields=["status"])
 
+            if finalize:
+
+                def _auto_first_recalibration():
+                    from cooking.models import IngredientScale
+                    from recipe_engine.services.scale_store import recalibrate_and_store
+
+                    existing_scales = IngredientScale.objects.filter(
+                        branch_id=None,
+                        recipe_id=batch.recipe.id,
+                    ).exists()
+
+                    if not existing_scales:
+                        recalibrate_and_store(
+                            branch_id=None,
+                            recipe_id=batch.recipe.id,
+                            window_batches=30,
+                            min_batches=20,
+                        )
+
+                transaction.on_commit(_auto_first_recalibration)
+
         event_action = (
             ActivityAction.COOK_BATCH_FINALIZED
             if finalize
@@ -685,6 +713,10 @@ def list_cook_batches(request):
             .order_by("-created_at")
         )
 
+        # Store users only see finalized batches
+        if qs.filter(branch__staff_roles__role="store").exists():
+            qs = qs.filter(status="final")
+
     return Response(CookBatchSerializer(qs, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -700,6 +732,12 @@ def retrieve_cook_batch(request, batch_id: int):
     if not can_view_batch(request.user, batch.branch):
         return Response(
             {"detail": "You do not have permission to view this batch."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if is_store(request.user, batch.branch) and batch.status != "final":
+        return Response(
+            {"detail": "Store users can only view finalized batches."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -724,6 +762,8 @@ def recalibrate_ingredient_scales(request):
     Body (all optional):
       {
         "tau_days": 14,
+        "window_batches": 30,
+        "min_batches": 5,
         "branch_id": 3,
         "recipe_id": 2
       }
@@ -739,6 +779,8 @@ def recalibrate_ingredient_scales(request):
         )
 
     tau_days = request.data.get("tau_days", 14)
+    window_batches = request.data.get("window_batches", 30)
+    min_batches = request.data.get("min_batches", 20)
     branch_id = request.data.get("branch_id")
     recipe_id = request.data.get("recipe_id")
 
@@ -753,6 +795,40 @@ def recalibrate_ingredient_scales(request):
     if tau_days <= 0:
         return Response(
             {"detail": "tau_days must be > 0."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        window_batches = int(window_batches)
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "window_batches must be an integer."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        min_batches = int(min_batches)
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "min_batches must be an integer."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if window_batches <= 0:
+        return Response(
+            {"detail": "window_batches must be > 0."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if min_batches <= 0:
+        return Response(
+            {"detail": "min_batches must be > 0."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if min_batches > window_batches:
+        return Response(
+            {"detail": "min_batches cannot be greater than window_batches."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -783,6 +859,8 @@ def recalibrate_ingredient_scales(request):
             tau_days=tau_days,
             branch_id=branch_id,
             recipe_id=recipe_id,
+            window_batches=window_batches,
+            min_batches=min_batches,
         )
     except Exception as exc:
         return Response(
@@ -804,9 +882,11 @@ def recalibrate_ingredient_scales(request):
                 ),
                 metadata={
                     "tau_days": tau_days,
+                    "window_batches": window_batches,
+                    "min_batches": min_batches,
                     "branch_id": branch_id,
                     "recipe_id": recipe_id,
-                    "scales_updated": 0,  # or len(items) in the final success path
+                    "scales_updated": 0,
                 },
             )
         )
@@ -815,6 +895,8 @@ def recalibrate_ingredient_scales(request):
             {
                 "message": "No scales were generated.",
                 "tau_days": tau_days,
+                "window_batches": window_batches,
+                "min_batches": min_batches,
                 "branch_id": branch_id,
                 "recipe_id": recipe_id,
                 "scales_updated": 0,
@@ -847,17 +929,20 @@ def recalibrate_ingredient_scales(request):
                 ),
                 metadata={
                     "tau_days": tau_days,
+                    "window_batches": window_batches,
+                    "min_batches": min_batches,
                     "branch_id": branch_id,
                     "recipe_id": recipe_id,
-                    "scales_updated": 0,  # or len(items) in the final success path
+                    "scales_updated": 0,
                 },
             )
         )
 
     return Response(
         {
-            "message": "Recalibration completed successfully.",
             "tau_days": tau_days,
+            "window_batches": window_batches,
+            "min_batches": min_batches,
             "branch_id": branch_id,
             "recipe_id": recipe_id,
             "scales_updated": len(items),

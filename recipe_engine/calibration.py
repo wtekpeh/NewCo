@@ -43,26 +43,19 @@ def fit_scale_factors(
 
     df = logs.copy()
 
-    # Compute weights (recent gets higher weight)
-    max_day = float(df[day_col].max())
-    age = (max_day - df[day_col].astype(float)).astype(float)
-    df["w"] = np.exp(-age / float(tau_days))
+    # Event-based calibration:
+    # all selected recent batches get equal weight.
+    df["w"] = 1.0
 
     # Scalable part (exclude floors)
-    df["pred_scalable"] = df[q10_col].astype(float) * (df[n_people_col].astype(float) / 10.0) ** df[b_col].astype(float)
+    df["pred_scalable"] = df[q10_col].astype(float) * (
+        df[n_people_col].astype(float) / 10.0
+    ) ** df[b_col].astype(float)
 
     df = df[df["pred_scalable"] > 0].copy()
     df["ratio"] = df[actual_col].astype(float) / df["pred_scalable"].astype(float)
 
-    # Weighted mean by ingredient
-    def _wmean(g: pd.DataFrame) -> float:
-        return float(np.average(g["ratio"], weights=g["w"]))
-
-    scales = (
-        df.groupby(ingredient_col, as_index=False)
-        .apply(_wmean)
-        .rename(columns={None: "s"})
-    )
+    scales = df.groupby(ingredient_col)["ratio"].mean().reset_index(name="s")
     scales["s"] = scales["s"].astype(float)
     return scales
 
@@ -105,7 +98,9 @@ def apply_scales_to_logs(
     df = logs.copy().merge(scales[[ingredient_col, "s"]], on=ingredient_col, how="left")
     df["s"] = df["s"].fillna(1.0).astype(float)
 
-    df["pred_scalable"] = df[q10_col].astype(float) * (df[n_people_col].astype(float) / 10.0) ** df[b_col].astype(float)
+    df["pred_scalable"] = df[q10_col].astype(float) * (
+        df[n_people_col].astype(float) / 10.0
+    ) ** df[b_col].astype(float)
     df["pred_g_new"] = df["s"] * df["pred_scalable"] + df[c_col].astype(float)
 
     # Protein selection per row (optional)

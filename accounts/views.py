@@ -98,7 +98,7 @@ def list_users(request):
     if role:
         if role in ["boss", "managing_director", "none"]:
             users = users.filter(global_role=role)
-        elif role in ["branch_manager", "chef", "kitchen_staff"]:
+        elif role in ["branch_manager", "chef", "kitchen_staff", "store"]:
             users = users.filter(
                 branch_roles__role=role,
                 branch_roles__is_active=True,
@@ -233,7 +233,7 @@ def branch_manager_list_staff(request):
 
     queryset = BranchRoleAssignment.objects.filter(
         branch_id__in=managed_branch_ids,
-        role__in=["chef", "kitchen_staff"],
+        role__in=["chef", "kitchen_staff", "store"],
         is_active=True,
         branch__is_active=True,
         staff_profile__is_active=True,
@@ -261,7 +261,7 @@ def branch_manager_list_staff(request):
         queryset = queryset.filter(branch_id=branch_id_int)
 
     if role:
-        if role not in ["chef", "kitchen_staff"]:
+        if role not in ["chef", "kitchen_staff", "store"]:
             return Response(
                 {"detail": "Invalid role filter."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -446,7 +446,7 @@ def branch_manager_update_assignment(request, assignment_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    if assignment.role not in ["chef", "kitchen_staff"]:
+    if assignment.role not in ["chef", "kitchen_staff", "store"]:
         return Response(
             {"detail": "Only chef and kitchen staff assignments can be updated here."},
             status=status.HTTP_403_FORBIDDEN,
@@ -495,7 +495,7 @@ def branch_manager_delete_assignment(request, assignment_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    if assignment.role not in ["chef", "kitchen_staff"]:
+    if assignment.role not in ["chef", "kitchen_staff", "store"]:
         return Response(
             {"detail": "Only chef and kitchen staff assignments can be deleted here."},
             status=status.HTTP_403_FORBIDDEN,
