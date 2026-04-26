@@ -32,6 +32,28 @@ class CookBatchSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(
         source="created_by.full_name", read_only=True
     )
+    actuals_locked = serializers.BooleanField(read_only=True)
+
+    actuals_locked_by_name = serializers.CharField(
+        source="actuals_locked_by.full_name",
+        read_only=True,
+    )
+
+    recipe_actuals_locked = serializers.BooleanField(
+        source="recipe.actuals_locked",
+        read_only=True,
+    )
+
+    recipe_actuals_locked_by_name = serializers.CharField(
+        source="recipe.actuals_locked_by.full_name",
+        read_only=True,
+    )
+
+    recipe_actuals_locked_at = serializers.DateTimeField(
+        source="recipe.actuals_locked_at",
+        read_only=True,
+    )
+    actuals_locked_at = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = CookBatch
@@ -49,6 +71,12 @@ class CookBatchSerializer(serializers.ModelSerializer):
             "status",
             "notes",
             "created_at",
+            "actuals_locked",
+            "actuals_locked_by_name",
+            "actuals_locked_at",
+            "recipe_actuals_locked",
+            "recipe_actuals_locked_by_name",
+            "recipe_actuals_locked_at",
             "items",
         ]
         read_only_fields = [

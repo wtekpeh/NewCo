@@ -43,6 +43,19 @@ class CookBatch(models.Model):
 
     notes = models.TextField(blank=True)
 
+    # Lock actuals after approval (Boss / MD)
+    actuals_locked = models.BooleanField(default=False)
+
+    actuals_locked_by = models.ForeignKey(
+        "accounts.StaffProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="locked_batches",
+    )
+
+    actuals_locked_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:

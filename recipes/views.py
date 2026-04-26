@@ -805,3 +805,93 @@ def import_recipes_csv(request):
         },
         status=status.HTTP_201_CREATED,
     )
+
+
+from django.utils import timezone
+from accounts.permissions import has_global_access
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def lock_recipe_actuals(request, recipe_id: int):
+    """
+    PATCH /api/recipes/{id}/lock-actuals/
+
+    Only boss / managing director
+    Locks actual editing for ALL batches of this recipe
+    """
+
+    try:
+        recipe = Recipe.objects.get(pk=recipe_id)
+    except Recipe.DoesNotExist:
+        return Response(
+            {"detail": "Recipe not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to lock this recipe."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if recipe.actuals_locked:
+        return Response(
+            {"detail": "Recipe is already locked."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    recipe.actuals_locked = True
+    recipe.actuals_locked_by = request.user
+    recipe.actuals_locked_at = timezone.now()
+    recipe.save(
+        update_fields=["actuals_locked", "actuals_locked_by", "actuals_locked_at"]
+    )
+
+    return Response(
+        {"detail": "Recipe actuals locked successfully."},
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def unlock_recipe_actuals(request, recipe_id: int):
+    """
+    PATCH /api/recipes/{id}/unlock-actuals/
+
+    Only boss / managing director
+    Unlocks actual editing for ALL batches of this recipe
+    """
+
+    try:
+        recipe = Recipe.objects.get(pk=recipe_id)
+    except Recipe.DoesNotExist:
+        return Response(
+            {"detail": "Recipe not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to unlock this recipe."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not recipe.actuals_locked:
+        return Response(
+            {"detail": "Recipe is already unlocked."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    recipe.actuals_locked = False
+    recipe.actuals_locked_by = None
+    recipe.actuals_locked_at = None
+    recipe.save(
+        update_fields=["actuals_locked", "actuals_locked_by", "actuals_locked_at"]
+    )
+
+    return Response(
+        {"detail": "Recipe actuals unlocked successfully."},
+        status=status.HTTP_200_OK,
+    )

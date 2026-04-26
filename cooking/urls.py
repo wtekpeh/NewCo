@@ -26,4 +26,8 @@ urlpatterns = [
         views.recalibrate_ingredient_scales,
         name="cooking-recalibrate",
     ),
+    path(
+        "batches/<int:batch_id>/lock-actuals/",
+        views.lock_cook_batch_actuals,
+    ),
 ]

@@ -20,6 +20,11 @@ urlpatterns = [
         name="recipe-manage-detail",
     ),
     path("recipes/<int:pk>/", views.recipe_detail, name="recipe-detail"),
+    path(
+        "recipes/<int:recipe_id>/lock-actuals/",
+        views.lock_recipe_actuals,
+        name="recipe-lock-actuals",
+    ),
     # Recipe ingredient management
     path(
         "recipes/manage/<int:recipe_id>/ingredients/",
@@ -40,5 +45,10 @@ urlpatterns = [
         "recipes/ingredients/<int:pk>/manage/",
         views.recipe_ingredient_manage_detail,
         name="recipe-ingredient-manage-detail",
+    ),
+    path(
+        "recipes/<int:recipe_id>/unlock-actuals/",
+        views.unlock_recipe_actuals,
+        name="recipe-unlock-actuals",
     ),
 ]

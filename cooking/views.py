@@ -461,6 +461,20 @@ def update_cook_batch_actuals(request, batch_id: int):
             status=status.HTTP_403_FORBIDDEN,
         )
 
+    # Block edits if recipe is locked (except global users)
+
+    if (
+        batch.recipe.actuals_locked
+        and not has_global_access(request.user)
+        and not finalize
+    ):
+        return Response(
+            {
+                "detail": "Saving actuals is locked for this recipe. You can still finalize the batch."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     # Validate item IDs are unique in payload
     payload_ids = [x["id"] for x in items_payload]
     if len(payload_ids) != len(set(payload_ids)):
@@ -690,6 +704,47 @@ def post_review_update_cook_batch(request, batch_id: int):
     return Response(CookBatchSerializer(batch).data, status=status.HTTP_200_OK)
 
 
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def lock_cook_batch_actuals(request, batch_id: int):
+    """
+    PATCH /api/cooking/batches/{batch_id}/lock-actuals/
+    Only global users (boss / managing director)
+    """
+
+    try:
+        batch = CookBatch.objects.get(pk=batch_id)
+    except CookBatch.DoesNotExist:
+        return Response(
+            {"detail": "Batch not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to lock this batch."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if batch.actuals_locked:
+        return Response(
+            {"detail": "Batch is already locked."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    batch.actuals_locked = True
+    batch.actuals_locked_by = request.user
+    batch.actuals_locked_at = timezone.now()
+    batch.save(
+        update_fields=["actuals_locked", "actuals_locked_by", "actuals_locked_at"]
+    )
+
+    return Response(
+        {"detail": "Batch actuals locked successfully."},
+        status=status.HTTP_200_OK,
+    )
+
+
 @extend_schema(
     methods=["GET"],
     responses={200: CookBatchSerializer(many=True)},
@@ -713,8 +768,22 @@ def list_cook_batches(request):
             .order_by("-created_at")
         )
 
-        # Store users only see finalized batches
-        if qs.filter(branch__staff_roles__role="store").exists():
+        # Store-only users should only see finalized batches.
+
+        # If user is branch manager for any branch, do NOT apply store restriction globally.
+        is_branch_manager_any = qs.filter(
+            branch__staff_roles__staff_profile=user,
+            branch__staff_roles__role="branch_manager",
+            branch__staff_roles__is_active=True,
+        ).exists()
+
+        is_store_any = qs.filter(
+            branch__staff_roles__staff_profile=user,
+            branch__staff_roles__role="store",
+            branch__staff_roles__is_active=True,
+        ).exists()
+
+        if is_store_any and not is_branch_manager_any:
             qs = qs.filter(status="final")
 
     return Response(CookBatchSerializer(qs, many=True).data, status=status.HTTP_200_OK)

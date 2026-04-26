@@ -14,6 +14,19 @@ class Recipe(models.Model):
 
     is_active = models.BooleanField(default=True)
 
+    # Lock actual editing once prediction is trusted
+    actuals_locked = models.BooleanField(default=False)
+
+    actuals_locked_by = models.ForeignKey(
+        "accounts.StaffProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="locked_recipes",
+    )
+
+    actuals_locked_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

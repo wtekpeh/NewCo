@@ -21,10 +21,28 @@ class RecipeIngredientSerializer(serializers.ModelSerializer):
 
 class RecipeSerializer(serializers.ModelSerializer):
     ingredients = RecipeIngredientSerializer(many=True, read_only=True)
+    actuals_locked = serializers.BooleanField(read_only=True)
+
+    actuals_locked_by_name = serializers.CharField(
+        source="actuals_locked_by.full_name",
+        read_only=True,
+    )
+
+    actuals_locked_at = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = Recipe
-        fields = ["id", "name", "description", "is_active", "ingredients"]
+        fields = [
+            "id",
+            "name",
+            "description",
+            "is_active",
+            # NEW
+            "actuals_locked",
+            "actuals_locked_by_name",
+            "actuals_locked_at",
+            "ingredients",
+        ]
 
 
 class RecipePredictOptionsSerializer(serializers.Serializer):
