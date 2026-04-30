@@ -72,6 +72,7 @@ def create_cook_batch(request):
     n_people = int(req.validated_data["n_people"])
     options = req.validated_data.get("options") or {}
     notes = req.validated_data.get("notes", "")
+    used_date = req.validated_data.get("used_date")
 
     protein_type = (options.get("protein") or "").strip()
 
@@ -381,6 +382,7 @@ def create_cook_batch(request):
             branch=branch,
             created_by=request.user,
             n_people=n_people,
+            used_date=used_date,
             options=options,
             protein_type=protein_type,
             status="draft",

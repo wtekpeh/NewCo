@@ -28,6 +28,12 @@ class CookBatch(models.Model):
 
     n_people = models.PositiveIntegerField()
 
+    used_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date this batch is planned to be used.",
+    )
+
     # Keep options flexible (today: protein choice; future: spice level, etc.)
     options = models.JSONField(default=dict, blank=True)
 

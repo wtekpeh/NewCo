@@ -66,6 +66,7 @@ class CookBatchSerializer(serializers.ModelSerializer):
             "created_by",
             "created_by_name",
             "n_people",
+            "used_date",
             "options",
             "protein_type",
             "status",
@@ -98,6 +99,7 @@ class CookBatchCreateRequestSerializer(serializers.Serializer):
     recipe_id = serializers.IntegerField()
     branch_id = serializers.IntegerField()
     n_people = serializers.IntegerField(min_value=1)
+    used_date = serializers.DateField(required=False)
     options = serializers.DictField(required=False)
     notes = serializers.CharField(required=False, allow_blank=True)
 

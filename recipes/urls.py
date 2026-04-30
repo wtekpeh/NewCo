@@ -2,6 +2,26 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path(
+        "ingredient-categories/",
+        views.ingredient_category_list_create,
+        name="ingredient-category-list-create",
+    ),
+    path(
+        "ingredient-categories/<int:pk>/",
+        views.ingredient_category_detail,
+        name="ingredient-category-detail",
+    ),
+    path(
+        "recipes/ingredients/<int:pk>/assign-category/",
+        views.assign_category_to_recipe_ingredient,
+        name="recipe-ingredient-assign-category",
+    ),
+    path(
+        "recipe-ingredients/",
+        views.list_all_recipe_ingredients,
+        name="recipe-ingredient-global-list",
+    ),
     path("recipes/", views.list_recipes, name="recipe-list"),
     path(
         "recipes/protein-choices/",

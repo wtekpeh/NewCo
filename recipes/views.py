@@ -10,7 +10,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.decorators import parser_classes
 
 
-from .models import Recipe, RecipeIngredient
+from .models import Recipe, RecipeIngredient, IngredientCategory
 from .serializers import (
     RecipeSerializer,
     RecipePredictRequestSerializer,
@@ -20,6 +20,7 @@ from .serializers import (
     RecipeIngredientWriteSerializer,
     RecipeCSVRowSerializer,
     ProteinChoiceListResponseSerializer,
+    IngredientCategorySerializer,
 )
 
 from recipe_engine.scaling import predict_ingredients
@@ -116,6 +117,88 @@ def list_protein_choices(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@extend_schema(
+    methods=["GET", "POST"],
+    request=IngredientCategorySerializer,
+    responses=IngredientCategorySerializer(many=True),
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def ingredient_category_list_create(request):
+    if request.method == "GET":
+        qs = IngredientCategory.objects.filter(is_active=True).order_by("name")
+        return Response(
+            IngredientCategorySerializer(qs, many=True).data,
+            status=status.HTTP_200_OK,
+        )
+
+    if not can_manage_recipes(request.user):
+        return Response(
+            {"detail": "You do not have permission to manage ingredient categories."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = IngredientCategorySerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    category = serializer.save()
+
+    return Response(
+        IngredientCategorySerializer(category).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@extend_schema(
+    methods=["PATCH", "DELETE"],
+    request=IngredientCategorySerializer,
+    responses=IngredientCategorySerializer,
+)
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def ingredient_category_detail(request, pk: int):
+    if not can_manage_recipes(request.user):
+        return Response(
+            {"detail": "You do not have permission to manage ingredient categories."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    category = get_object_or_404(IngredientCategory, pk=pk)
+
+    if request.method == "PATCH":
+        serializer = IngredientCategorySerializer(
+            category,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        category = serializer.save()
+
+        return Response(
+            IngredientCategorySerializer(category).data,
+            status=status.HTTP_200_OK,
+        )
+
+    if request.method == "DELETE":
+        # Check if any active ingredient is using this category
+        if RecipeIngredient.objects.filter(
+            category=category,
+            is_active=True,
+        ).exists():
+            return Response(
+                {
+                    "detail": "Cannot delete category because some ingredients are assigned to it."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        category.is_active = False
+        category.save(update_fields=["is_active"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema(
@@ -515,6 +598,60 @@ def recipe_ingredient_manage_detail(request, pk: int):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def assign_category_to_recipe_ingredient(request, pk: int):
+    """
+    PATCH /api/recipe-ingredients/{id}/assign-category/
+
+    Body:
+    {
+        "category_id": 1
+    }
+    """
+
+    if not can_manage_recipes(request.user):
+        return Response(
+            {"detail": "You do not have permission to assign categories."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    ingredient = get_object_or_404(RecipeIngredient, pk=pk)
+
+    category_id = request.data.get("category_id")
+
+    if category_id is None:
+        return Response(
+            {"detail": "category_id is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if category_id == "":
+        ingredient.category = None
+        ingredient.save(update_fields=["category"])
+        return Response(
+            RecipeIngredientSerializer(ingredient).data,
+            status=status.HTTP_200_OK,
+        )
+
+    try:
+        category = IngredientCategory.objects.get(pk=category_id, is_active=True)
+    except IngredientCategory.DoesNotExist:
+        return Response(
+            {"detail": "Category not found or inactive."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    ingredient.category = category
+    ingredient.save(update_fields=["category"])
+
+    return Response(
+        RecipeIngredientSerializer(ingredient).data,
+        status=status.HTTP_200_OK,
+    )
+
+
 @extend_schema(
     request=None,
     responses={201: dict, 400: dict, 403: dict},
@@ -893,5 +1030,30 @@ def unlock_recipe_actuals(request, recipe_id: int):
 
     return Response(
         {"detail": "Recipe actuals unlocked successfully."},
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    responses=RecipeIngredientSerializer(many=True),
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_all_recipe_ingredients(request):
+    """
+    GET /api/recipe-ingredients/
+
+    Lists all recipe ingredients across all recipes.
+    Used by Ingredient Category Management screen.
+    """
+
+    ingredients = (
+        RecipeIngredient.objects.select_related("recipe", "category")
+        .filter(is_active=True, recipe__is_active=True)
+        .order_by("recipe__name", "item_no", "id")
+    )
+
+    return Response(
+        RecipeIngredientSerializer(ingredients, many=True).data,
         status=status.HTTP_200_OK,
     )

@@ -1,18 +1,35 @@
 from rest_framework import serializers
-from .models import Recipe, RecipeIngredient
+from .models import Recipe, RecipeIngredient, IngredientCategory
+
+
+class IngredientCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IngredientCategory
+        fields = [
+            "id",
+            "name",
+            "description",
+            "is_active",
+        ]
 
 
 class RecipeIngredientSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    recipe_name = serializers.CharField(source="recipe.name", read_only=True)
+
     class Meta:
         model = RecipeIngredient
         fields = [
             "id",
+            "recipe_name",
             "item_no",
             "name",
             "q10_g",
             "b",
             "c_g",
             "group",
+            "category",
+            "category_name",
             "option_group",
             "option_value",
             "is_active",
@@ -113,6 +130,8 @@ class RecipeIngredientWriteSerializer(serializers.ModelSerializer):
             "item_no",
             "name",
             "group",
+            "category",
+            "category_name",
             "q10_g",
             "b",
             "c_g",
