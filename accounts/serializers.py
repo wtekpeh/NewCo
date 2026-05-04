@@ -197,3 +197,50 @@ class StaffRoleUpdateSerializer(serializers.Serializer):
 
         staff.refresh_from_db()
         return staff
+
+
+class BranchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Branch
+        fields = [
+            "id",
+            "name",
+            "code",
+            "location",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError("Branch name is required.")
+
+        qs = Branch.objects.filter(name__iexact=value)
+
+        if self.instance:
+            qs = qs.exclude(id=self.instance.id)
+
+        if qs.exists():
+            raise serializers.ValidationError("Branch with this name already exists.")
+
+        return value
+
+    def validate_code(self, value):
+        value = (value or "").strip()
+
+        if not value:
+            return value
+
+        qs = Branch.objects.filter(code__iexact=value)
+
+        if self.instance:
+            qs = qs.exclude(id=self.instance.id)
+
+        if qs.exists():
+            raise serializers.ValidationError("Branch code already exists.")
+
+        return value

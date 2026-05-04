@@ -17,6 +17,7 @@ from accounts.serializers import (
     BranchManagerUserSearchSerializer,
     BranchManagerAssignmentCreateSerializer,
     BranchManagerAssignmentUpdateSerializer,
+    BranchSerializer,
 )
 
 from accounts.permissions import has_global_access
@@ -201,20 +202,114 @@ def update_user_roles(request, pk):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_branches(request):
-    branches = Branch.objects.filter(is_active=True).order_by("name")
+    branches = Branch.objects.all().order_by("name")
+    serializer = BranchSerializer(branches, many=True)
+    return Response(serializer.data)
 
-    data: list[dict[str, Any]] = []
 
-    for branch in branches:
-        data.append(
-            {
-                "id": int(branch.pk),
-                "name": str(branch.name),
-                "code": str(branch.code or ""),
-            }
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_branch(request):
+    user = request.user
+
+    if not has_global_access(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
         )
 
-    return Response(data)
+    serializer = BranchSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    with transaction.atomic():
+        branch = serializer.save()
+
+    return Response(
+        BranchSerializer(branch).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_branch_detail(request, pk):
+    try:
+        branch = Branch.objects.get(pk=pk)
+    except Branch.DoesNotExist:
+        return Response(
+            {"detail": "Branch not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    return Response(BranchSerializer(branch).data)
+
+
+@api_view(["PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def update_branch(request, pk):
+    user = request.user
+
+    if not has_global_access(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        branch = Branch.objects.get(pk=pk)
+    except Branch.DoesNotExist:
+        return Response(
+            {"detail": "Branch not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = BranchSerializer(branch, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+
+    with transaction.atomic():
+        branch = serializer.save()
+
+    return Response(BranchSerializer(branch).data)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_branch_status(request, pk):
+    user = request.user
+
+    if not has_global_access(user):
+        return Response(
+            {"detail": "Not authorized"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        branch = Branch.objects.get(pk=pk)
+    except Branch.DoesNotExist:
+        return Response(
+            {"detail": "Branch not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if "is_active" not in request.data:
+        return Response(
+            {"detail": "is_active is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    is_active = request.data.get("is_active")
+
+    if not isinstance(is_active, bool):
+        return Response(
+            {"detail": "is_active must be true or false."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        branch.is_active = is_active
+        branch.save(update_fields=["is_active", "updated_at"])
+
+    return Response(BranchSerializer(branch).data)
 
 
 @api_view(["GET"])
