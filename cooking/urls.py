@@ -30,4 +30,19 @@ urlpatterns = [
         "batches/<int:batch_id>/lock-actuals/",
         views.lock_cook_batch_actuals,
     ),
+    path(
+        "cooking/daily-plans/create/",
+        views.create_daily_consumption_plan_view,
+        name="daily-consumption-plan-create",
+    ),
+    path(
+        "cooking/daily-plans/",
+        views.list_daily_consumption_plans,
+        name="daily-consumption-plan-list",
+    ),
+    path(
+        "cooking/daily-plans/<int:plan_id>/",
+        views.retrieve_daily_consumption_plan,
+        name="daily-consumption-plan-detail",
+    ),
 ]

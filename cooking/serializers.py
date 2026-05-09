@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import CookBatch, CookBatchItem
+from .models import (
+    CookBatch,
+    CookBatchItem,
+    DailyConsumptionPlan,
+    DailyConsumptionPlanRecipe,
+    DailyConsumptionPlanIngredientSummary,
+)
 
 
 class CookBatchItemSerializer(serializers.ModelSerializer):
@@ -124,3 +130,106 @@ class CookBatchPostReviewItemUpdateSerializer(serializers.Serializer):
 class CookBatchPostReviewUpdateRequestSerializer(serializers.Serializer):
     items = CookBatchPostReviewItemUpdateSerializer(many=True)
     notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class DailyConsumptionPlanRecipeInputSerializer(serializers.Serializer):
+    recipe_id = serializers.IntegerField()
+    n_people = serializers.IntegerField(min_value=1)
+    options = serializers.DictField(required=False)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class DailyConsumptionPlanCreateRequestSerializer(serializers.Serializer):
+    branch_id = serializers.IntegerField()
+    used_date = serializers.DateField()
+    recipes = DailyConsumptionPlanRecipeInputSerializer(many=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_recipes(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                "At least one recipe is required for a daily consumption plan."
+            )
+
+        if len(value) < 2:
+            raise serializers.ValidationError(
+                "Daily Consumption Plan requires at least two recipes. Use Single Consumption for one recipe."
+            )
+
+        return value
+
+
+class DailyConsumptionPlanRecipeSerializer(serializers.ModelSerializer):
+    recipe_name = serializers.CharField(source="recipe.name", read_only=True)
+    cook_batch_detail = CookBatchSerializer(source="cook_batch", read_only=True)
+
+    class Meta:
+        model = DailyConsumptionPlanRecipe
+        fields = [
+            "id",
+            "recipe",
+            "recipe_name",
+            "cook_batch",
+            "cook_batch_detail",
+            "n_people",
+            "options",
+            "protein_type",
+        ]
+
+
+class DailyConsumptionPlanIngredientSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailyConsumptionPlanIngredientSummary
+        fields = [
+            "id",
+            "ingredient",
+            "group",
+            "raw_total_g",
+            "raw_total_kg",
+            "adjusted_total_g",
+            "adjusted_total_kg",
+            "daily_factor",
+            "adjustment_g",
+            "unit_display",
+            "adjustment_reason",
+            "is_shared_adjusted",
+            "actual_total_g",
+            "actual_total_kg",
+        ]
+
+
+class DailyConsumptionPlanSerializer(serializers.ModelSerializer):
+    recipes = DailyConsumptionPlanRecipeSerializer(many=True, read_only=True)
+    ingredient_summaries = DailyConsumptionPlanIngredientSummarySerializer(
+        many=True,
+        read_only=True,
+    )
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+    created_by_name = serializers.CharField(
+        source="created_by.full_name",
+        read_only=True,
+    )
+
+    class Meta:
+        model = DailyConsumptionPlan
+        fields = [
+            "id",
+            "branch",
+            "branch_name",
+            "created_by",
+            "created_by_name",
+            "used_date",
+            "status",
+            "notes",
+            "created_at",
+            "recipes",
+            "ingredient_summaries",
+        ]
+        read_only_fields = [
+            "created_by",
+            "created_by_name",
+            "branch_name",
+            "created_at",
+            "recipes",
+            "ingredient_summaries",
+        ]

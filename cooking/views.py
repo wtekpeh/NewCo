@@ -16,13 +16,21 @@ from recipe_engine.scaling import predict_ingredients, sum_prediction_frames
 from recipe_engine.scaling import predict_with_scales
 from recipe_engine.services.scale_store import load_best_scales_df
 
-from .models import CookBatch, CookBatchItem
+from .models import (
+    CookBatch,
+    CookBatchItem,
+    DailyConsumptionPlan,
+)
 from .serializers import (
     CookBatchSerializer,
     CookBatchCreateRequestSerializer,
     CookBatchActualsUpdateRequestSerializer,
     CookBatchPostReviewUpdateRequestSerializer,
+    DailyConsumptionPlanCreateRequestSerializer,
+    DailyConsumptionPlanSerializer,
 )
+
+from recipe_engine.services.daily_plan_service import create_daily_consumption_plan
 
 from drf_spectacular.utils import extend_schema, OpenApiResponse
 
@@ -1019,5 +1027,120 @@ def recalibrate_ingredient_scales(request):
             "scales_updated": len(items),
             "items": items,
         },
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["POST"],
+    request=DailyConsumptionPlanCreateRequestSerializer,
+    responses={
+        201: DailyConsumptionPlanSerializer,
+        400: OpenApiResponse(description="Bad Request"),
+        403: OpenApiResponse(description="Forbidden"),
+    },
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_daily_consumption_plan_view(request):
+    """
+    POST /api/cooking/daily-plans/create/
+
+    Creates:
+      - one DailyConsumptionPlan
+      - multiple normal CookBatches underneath
+      - consolidated ingredient summary rows
+    """
+
+    req = DailyConsumptionPlanCreateRequestSerializer(data=request.data)
+
+    if not req.is_valid():
+        return Response(req.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    branch_id = req.validated_data["branch_id"]
+    used_date = req.validated_data["used_date"]
+    recipes_payload = req.validated_data["recipes"]
+    notes = req.validated_data.get("notes", "")
+
+    branch = get_object_or_404(Branch, pk=branch_id, is_active=True)
+
+    if not can_create_batch(request.user, branch):
+        return Response(
+            {
+                "detail": "You do not have permission to create a daily consumption plan for this site."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        plan = create_daily_consumption_plan(
+            user=request.user,
+            branch_id=branch_id,
+            used_date=used_date,
+            recipes_payload=recipes_payload,
+            notes=notes,
+        )
+    except Exception as exc:
+        return Response(
+            {"detail": str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    plan.refresh_from_db()
+
+    return Response(
+        DailyConsumptionPlanSerializer(plan).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@extend_schema(
+    methods=["GET"],
+    responses={200: DailyConsumptionPlanSerializer(many=True)},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_daily_consumption_plans(request):
+    user = request.user
+
+    if has_global_access(user):
+        qs = DailyConsumptionPlan.objects.all().order_by("-created_at")
+    else:
+        qs = (
+            DailyConsumptionPlan.objects.filter(
+                branch__staff_roles__staff_profile=user,
+                branch__staff_roles__is_active=True,
+                branch__staff_roles__branch__is_active=True,
+                created_by__is_active=True,
+            )
+            .distinct()
+            .order_by("-created_at")
+        )
+
+    return Response(
+        DailyConsumptionPlanSerializer(qs, many=True).data,
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["GET"],
+    responses={200: DailyConsumptionPlanSerializer},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def retrieve_daily_consumption_plan(request, plan_id: int):
+    plan = get_object_or_404(DailyConsumptionPlan, pk=plan_id)
+
+    if not can_view_batch(request.user, plan.branch):
+        return Response(
+            {
+                "detail": "You do not have permission to view this daily consumption plan."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    return Response(
+        DailyConsumptionPlanSerializer(plan).data,
         status=status.HTTP_200_OK,
     )
