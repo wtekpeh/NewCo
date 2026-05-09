@@ -41,6 +41,16 @@ urlpatterns = [
         name="daily-consumption-plan-list",
     ),
     path(
+        "cooking/daily-plans/<int:plan_id>/children/",
+        views.list_daily_consumption_plan_children,
+        name="daily-consumption-plan-children",
+    ),
+    path(
+        "cooking/daily-plans/<int:plan_id>/actuals/",
+        views.update_daily_consumption_plan_actuals,
+        name="daily-consumption-plan-actuals",
+    ),
+    path(
         "cooking/daily-plans/<int:plan_id>/",
         views.retrieve_daily_consumption_plan,
         name="daily-consumption-plan-detail",

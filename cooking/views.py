@@ -28,6 +28,7 @@ from .serializers import (
     CookBatchPostReviewUpdateRequestSerializer,
     DailyConsumptionPlanCreateRequestSerializer,
     DailyConsumptionPlanSerializer,
+    DailyPlanActualsUpdateRequestSerializer,
 )
 
 from recipe_engine.services.daily_plan_service import create_daily_consumption_plan
@@ -529,26 +530,26 @@ def update_cook_batch_actuals(request, batch_id: int):
             batch.status = "final"
             batch.save(update_fields=["status"])
 
-            if finalize:
+            def _auto_first_recalibration():
+                from cooking.models import IngredientScale
+                from recipe_engine.services.scale_store import (
+                    recalibrate_and_store,
+                )
 
-                def _auto_first_recalibration():
-                    from cooking.models import IngredientScale
-                    from recipe_engine.services.scale_store import recalibrate_and_store
+                existing_scales = IngredientScale.objects.filter(
+                    branch_id=None,
+                    recipe_id=batch.recipe.id,
+                ).exists()
 
-                    existing_scales = IngredientScale.objects.filter(
+                if not existing_scales:
+                    recalibrate_and_store(
                         branch_id=None,
                         recipe_id=batch.recipe.id,
-                    ).exists()
+                        window_batches=30,
+                        min_batches=20,
+                    )
 
-                    if not existing_scales:
-                        recalibrate_and_store(
-                            branch_id=None,
-                            recipe_id=batch.recipe.id,
-                            window_batches=30,
-                            min_batches=20,
-                        )
-
-                transaction.on_commit(_auto_first_recalibration)
+            transaction.on_commit(_auto_first_recalibration)
 
         event_action = (
             ActivityAction.COOK_BATCH_FINALIZED
@@ -765,10 +766,11 @@ def list_cook_batches(request):
     user = request.user
 
     if has_global_access(user):
-        qs = CookBatch.objects.all().order_by("-created_at")
+        qs = CookBatch.objects.filter(source_type="single").order_by("-created_at")
     else:
         qs = (
             CookBatch.objects.filter(
+                source_type="single",
                 branch__staff_roles__staff_profile=user,
                 branch__staff_roles__is_active=True,
                 branch__staff_roles__branch__is_active=True,
@@ -806,7 +808,11 @@ def list_cook_batches(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def retrieve_cook_batch(request, batch_id: int):
-    batch = get_object_or_404(CookBatch, pk=batch_id)
+    batch = get_object_or_404(
+        CookBatch,
+        pk=batch_id,
+        source_type="single",
+    )
 
     if not can_view_batch(request.user, batch.branch):
         return Response(
@@ -1139,6 +1145,153 @@ def retrieve_daily_consumption_plan(request, plan_id: int):
             },
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    return Response(
+        DailyConsumptionPlanSerializer(plan).data,
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["GET"],
+    responses={200: CookBatchSerializer(many=True)},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_daily_consumption_plan_children(request, plan_id: int):
+    plan = get_object_or_404(DailyConsumptionPlan, pk=plan_id)
+
+    if not can_view_batch(request.user, plan.branch):
+        return Response(
+            {
+                "detail": "You do not have permission to view this daily consumption plan."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    batches = (
+        CookBatch.objects.filter(
+            daily_plan_recipe__plan=plan,
+            source_type="daily_plan",
+        )
+        .select_related("recipe", "branch", "created_by")
+        .prefetch_related("items")
+        .order_by("created_at")
+    )
+
+    return Response(
+        CookBatchSerializer(batches, many=True).data,
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["PATCH"],
+    request=DailyPlanActualsUpdateRequestSerializer,
+    responses={
+        200: DailyConsumptionPlanSerializer,
+        400: OpenApiResponse(description="Bad Request"),
+        403: OpenApiResponse(description="Forbidden"),
+        404: OpenApiResponse(description="Plan not found / summary item not in plan"),
+    },
+)
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_daily_consumption_plan_actuals(request, plan_id: int):
+    """
+    PATCH /api/cooking/daily-plans/{plan_id}/actuals/
+
+    Updates consolidated daily ingredient actual totals.
+    This is separate from CookBatchItem actuals.
+    """
+
+    req = DailyPlanActualsUpdateRequestSerializer(data=request.data)
+
+    if not req.is_valid():
+        return Response(req.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    items_payload = req.validated_data["items"]
+    finalize = bool(req.validated_data.get("finalize", False))
+
+    plan = get_object_or_404(DailyConsumptionPlan, pk=plan_id)
+
+    if not can_update_batch(request.user, plan.branch):
+        return Response(
+            {
+                "detail": "You do not have permission to update this daily consumption plan."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    payload_ids = [item["id"] for item in items_payload]
+
+    if len(payload_ids) != len(set(payload_ids)):
+        return Response(
+            {"detail": "Duplicate summary item id found in payload."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        summary_qs = plan.ingredient_summaries.select_for_update().filter(
+            id__in=payload_ids
+        )
+
+        found_ids = set(summary_qs.values_list("id", flat=True))
+        missing_ids = [item_id for item_id in payload_ids if item_id not in found_ids]
+
+        if missing_ids:
+            return Response(
+                {
+                    "detail": "Some summary items do not belong to this daily plan.",
+                    "missing_item_ids": missing_ids,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        payload_map = {item["id"]: item for item in items_payload}
+
+        summaries_to_update = []
+
+        for summary in summary_qs:
+            actual_total_g = float(payload_map[summary.id]["actual_total_g"])
+
+            summary.actual_total_g = actual_total_g
+            summary.actual_total_kg = actual_total_g / 1000.0
+
+            summaries_to_update.append(summary)
+
+        plan.ingredient_summaries.model.objects.bulk_update(
+            summaries_to_update,
+            ["actual_total_g", "actual_total_kg"],
+        )
+
+        if finalize:
+            missing_actuals = plan.ingredient_summaries.filter(
+                is_shared_adjusted=True,
+                actual_total_g__isnull=True,
+            )
+
+            if missing_actuals.exists():
+                return Response(
+                    {
+                        "detail": "All shared-adjusted ingredients must have actual totals before finalizing.",
+                        "missing_items": list(
+                            missing_actuals.values("id", "ingredient")
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            from recipe_engine.services.daily_plan_scale_store import (
+                update_daily_plan_scales,
+            )
+
+            plan.status = "final"
+            plan.save(update_fields=["status"])
+
+            update_daily_plan_scales(plan)
+
+    plan.refresh_from_db()
 
     return Response(
         DailyConsumptionPlanSerializer(plan).data,

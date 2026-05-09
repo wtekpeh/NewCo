@@ -541,6 +541,7 @@ def create_daily_consumption_plan(
             used_date=used_date,
             options=options,
             protein_type=protein_type,
+            source_type="daily_plan",
             status="draft",
             notes=recipe_notes,
             created_at=timezone.now(),

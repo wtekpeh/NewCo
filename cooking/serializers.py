@@ -132,6 +132,16 @@ class CookBatchPostReviewUpdateRequestSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
 
 
+class DailyPlanActualItemUpdateSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    actual_total_g = serializers.FloatField(min_value=0)
+
+
+class DailyPlanActualsUpdateRequestSerializer(serializers.Serializer):
+    items = DailyPlanActualItemUpdateSerializer(many=True)
+    finalize = serializers.BooleanField(required=False, default=False)
+
+
 class DailyConsumptionPlanRecipeInputSerializer(serializers.Serializer):
     recipe_id = serializers.IntegerField()
     n_people = serializers.IntegerField(min_value=1)

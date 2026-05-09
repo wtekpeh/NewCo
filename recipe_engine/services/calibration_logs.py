@@ -17,7 +17,10 @@ def build_calibration_logs_qs() -> QuerySet[CookBatchItem]:
     """
     return (
         CookBatchItem.objects.select_related("batch")
-        .filter(actual_g__isnull=False)
+        .filter(
+            actual_g__isnull=False,
+            batch__source_type="single",
+        )
         .exclude(actual_g__lte=0)
         .order_by("batch__created_at", "id")
     )

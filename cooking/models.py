@@ -40,6 +40,17 @@ class CookBatch(models.Model):
     # Convenience: store chosen protein explicitly (optional but useful)
     protein_type = models.CharField(max_length=100, blank=True)
 
+    SOURCE_TYPE_CHOICES = [
+        ("single", "Single Consumption"),
+        ("daily_plan", "Daily Plan Consumption"),
+    ]
+
+    source_type = models.CharField(
+        max_length=20,
+        choices=SOURCE_TYPE_CHOICES,
+        default="single",
+    )
+
     # Workflow fields
     status = models.CharField(
         max_length=20,
@@ -363,3 +374,57 @@ class DailyPlanIngredientScale(models.Model):
     def __str__(self):
         scope = f"branch={self.branch_id}" if self.branch_id else "global"
         return f"{self.ingredient} | factor={self.learned_factor:.4f} | {scope}"
+
+
+class DailyPlanIngredientScaleSample(models.Model):
+    """
+    Historical finalized sample used to learn
+    daily shared ingredient adjustment behavior.
+
+    One row = one finalized ingredient observation.
+    """
+
+    ingredient = models.CharField(max_length=120)
+
+    branch = models.ForeignKey(
+        "accounts.Branch",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="daily_plan_ingredient_scale_samples",
+    )
+
+    plan = models.ForeignKey(
+        DailyConsumptionPlan,
+        on_delete=models.CASCADE,
+        related_name="ingredient_scale_samples",
+    )
+
+    summary = models.ForeignKey(
+        DailyConsumptionPlanIngredientSummary,
+        on_delete=models.CASCADE,
+        related_name="scale_samples",
+    )
+
+    raw_total_g = models.FloatField()
+
+    adjusted_total_g = models.FloatField()
+
+    actual_total_g = models.FloatField()
+
+    observed_factor = models.FloatField(help_text="actual_total_g / raw_total_g")
+
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["ingredient", "branch"]),
+        ]
+
+    def __str__(self):
+        scope = f"branch={self.branch_id}" if self.branch_id else "global"
+
+        return (
+            f"{self.ingredient} | " f"observed={self.observed_factor:.4f} | " f"{scope}"
+        )
