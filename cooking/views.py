@@ -1266,6 +1266,23 @@ def update_daily_consumption_plan_actuals(request, plan_id: int):
         )
 
         if finalize:
+            non_shared_missing_actuals = plan.ingredient_summaries.filter(
+                actual_total_g__isnull=True,
+            )
+
+            fallback_updates = []
+
+            for summary in non_shared_missing_actuals:
+                summary.actual_total_g = summary.adjusted_total_g
+                summary.actual_total_kg = summary.adjusted_total_kg
+                fallback_updates.append(summary)
+
+            if fallback_updates:
+                plan.ingredient_summaries.model.objects.bulk_update(
+                    fallback_updates,
+                    ["actual_total_g", "actual_total_kg"],
+                )
+
             missing_actuals = plan.ingredient_summaries.filter(
                 is_shared_adjusted=True,
                 actual_total_g__isnull=True,
@@ -1289,11 +1306,60 @@ def update_daily_consumption_plan_actuals(request, plan_id: int):
             plan.status = "final"
             plan.save(update_fields=["status"])
 
+            CookBatch.objects.filter(
+                source_type="daily_plan",
+                daily_plan_recipe__plan=plan,
+            ).update(status="final")
+
             update_daily_plan_scales(plan)
 
     plan.refresh_from_db()
 
     return Response(
         DailyConsumptionPlanSerializer(plan).data,
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["GET"],
+    responses={200: CookBatchSerializer},
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def retrieve_daily_consumption_plan_child(
+    request,
+    plan_id: int,
+    batch_id: int,
+):
+    """
+    GET /api/cooking/daily-plans/{plan_id}/children/{batch_id}/
+
+    Dedicated child batch detail endpoint for daily plans.
+    """
+
+    plan = get_object_or_404(DailyConsumptionPlan, pk=plan_id)
+
+    if not can_view_batch(request.user, plan.branch):
+        return Response(
+            {
+                "detail": "You do not have permission to view this daily consumption plan."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    batch = get_object_or_404(
+        CookBatch.objects.select_related(
+            "recipe",
+            "branch",
+            "created_by",
+        ).prefetch_related("items"),
+        pk=batch_id,
+        source_type="daily_plan",
+        daily_plan_recipe__plan=plan,
+    )
+
+    return Response(
+        CookBatchSerializer(batch).data,
         status=status.HTTP_200_OK,
     )
