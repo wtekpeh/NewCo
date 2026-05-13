@@ -27,6 +27,21 @@ urlpatterns = [
         name="cooking-recalibrate",
     ),
     path(
+        "cooking/daily-plans/rebuild-learning/",
+        views.rebuild_daily_plan_learning,
+        name="daily-plan-learning-rebuild",
+    ),
+    path(
+        "cooking/daily-shared-rules/",
+        views.daily_shared_ingredient_rules,
+        name="daily-shared-rules",
+    ),
+    path(
+        "cooking/daily-shared-rules/<int:rule_id>/",
+        views.daily_shared_ingredient_rule_detail,
+        name="daily-shared-rule-detail",
+    ),
+    path(
         "batches/<int:batch_id>/lock-actuals/",
         views.lock_cook_batch_actuals,
     ),

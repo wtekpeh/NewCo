@@ -428,3 +428,33 @@ class DailyPlanIngredientScaleSample(models.Model):
         return (
             f"{self.ingredient} | " f"observed={self.observed_factor:.4f} | " f"{scope}"
         )
+
+
+class DailySharedIngredientRule(models.Model):
+    """
+    Admin-managed keyword rules for determining
+    whether an ingredient is considered shared-adjustable
+    inside Daily Consumption Plans.
+    """
+
+    keyword = models.CharField(max_length=120, unique=True)
+
+    factor = models.FloatField(default=0.95)
+
+    is_active = models.BooleanField(default=True)
+
+    created_by = models.ForeignKey(
+        "accounts.StaffProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="daily_shared_ingredient_rules",
+    )
+
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["keyword"]
+
+    def __str__(self):
+        return f"{self.keyword} | factor={self.factor}"

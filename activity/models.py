@@ -12,6 +12,21 @@ class ActivityAction(models.TextChoices):
 
     COOK_BATCH_FINALIZED = "cook_batch_finalized", "Cook Batch Finalized"
 
+    DAILY_PLAN_CREATED = (
+        "daily_plan_created",
+        "Daily Plan Created",
+    )
+
+    DAILY_PLAN_ACTUALS_UPDATED = (
+        "daily_plan_actuals_updated",
+        "Daily Plan Actuals Updated",
+    )
+
+    DAILY_PLAN_FINALIZED = (
+        "daily_plan_finalized",
+        "Daily Plan Finalized",
+    )
+
     COOK_BATCH_POST_REVIEW_UPDATED = (
         "cook_batch_post_review_updated",
         "Cook Batch Post Review Updated",
@@ -25,6 +40,7 @@ class ActivityAction(models.TextChoices):
 
 class ActivityTargetType(models.TextChoices):
     COOK_BATCH = "cook_batch", "Cook Batch"
+    DAILY_PLAN = "daily_plan", "Daily Plan"
     RECIPE = "recipe", "Recipe"
     INGREDIENT_SCALE = "ingredient_scale", "Ingredient Scale"
     SYSTEM = "system", "System"

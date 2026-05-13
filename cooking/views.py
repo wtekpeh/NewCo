@@ -15,11 +15,16 @@ from recipes.models import Recipe, RecipeIngredient
 from recipe_engine.scaling import predict_ingredients, sum_prediction_frames
 from recipe_engine.scaling import predict_with_scales
 from recipe_engine.services.scale_store import load_best_scales_df
+from recipe_engine.services.daily_plan_scale_store import (
+    update_daily_plan_scales,
+    rebuild_daily_plan_scales,
+)
 
 from .models import (
     CookBatch,
     CookBatchItem,
     DailyConsumptionPlan,
+    DailySharedIngredientRule,
 )
 from .serializers import (
     CookBatchSerializer,
@@ -29,6 +34,7 @@ from .serializers import (
     DailyConsumptionPlanCreateRequestSerializer,
     DailyConsumptionPlanSerializer,
     DailyPlanActualsUpdateRequestSerializer,
+    DailySharedIngredientRuleSerializer,
 )
 
 from recipe_engine.services.daily_plan_service import create_daily_consumption_plan
@@ -1039,6 +1045,62 @@ def recalibrate_ingredient_scales(request):
 
 @extend_schema(
     methods=["POST"],
+    request=None,
+    responses={
+        200: OpenApiResponse(description="Daily plan scale rebuild completed"),
+        403: OpenApiResponse(description="Forbidden"),
+    },
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def rebuild_daily_plan_learning(request):
+    """
+    POST /api/cooking/daily-plans/rebuild-learning/
+
+    Rebuilds ALL learned shared-ingredient daily-plan scales
+    from finalized historical daily plans.
+    """
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to rebuild daily plan learning."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        rebuild_daily_plan_scales()
+
+    except Exception as exc:
+        return Response(
+            {"detail": f"Daily plan learning rebuild failed: {exc}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    transaction.on_commit(
+        lambda: emit_activity_event(
+            actor=request.user,
+            action=ActivityAction.INGREDIENT_SCALES_RECALIBRATED,
+            target_type=ActivityTargetType.INGREDIENT_SCALE,
+            target_id=None,
+            branch=None,
+            message=(
+                f"{request.user.full_name or request.user.email or request.user.username} "
+                f"rebuilt daily plan shared ingredient learning"
+            ),
+            metadata={
+                "rebuild_type": "daily_plan_learning",
+            },
+        )
+    )
+
+    return Response(
+        {"detail": "Daily plan learning rebuilt successfully."},
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["POST"],
     request=DailyConsumptionPlanCreateRequestSerializer,
     responses={
         201: DailyConsumptionPlanSerializer,
@@ -1093,6 +1155,28 @@ def create_daily_consumption_plan_view(request):
         )
 
     plan.refresh_from_db()
+
+    transaction.on_commit(
+        lambda: emit_activity_event(
+            actor=request.user,
+            action=ActivityAction.DAILY_PLAN_CREATED,
+            target_type=ActivityTargetType.DAILY_PLAN,
+            target_id=int(plan.pk),
+            branch=plan.branch,
+            message=(
+                f"{request.user.full_name or request.user.email or request.user.username} "
+                f"created daily consumption plan #{int(plan.pk)}"
+            ),
+            metadata={
+                "daily_plan_id": int(plan.pk),
+                "branch_id": int(plan.branch.pk),
+                "branch_name": plan.branch.name,
+                "used_date": str(plan.used_date),
+                "recipe_count": int(plan.recipes.count()),
+                "status": plan.status,
+            },
+        )
+    )
 
     return Response(
         DailyConsumptionPlanSerializer(plan).data,
@@ -1299,10 +1383,6 @@ def update_daily_consumption_plan_actuals(request, plan_id: int):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            from recipe_engine.services.daily_plan_scale_store import (
-                update_daily_plan_scales,
-            )
-
             plan.status = "final"
             plan.save(update_fields=["status"])
 
@@ -1314,6 +1394,43 @@ def update_daily_consumption_plan_actuals(request, plan_id: int):
             update_daily_plan_scales(plan)
 
     plan.refresh_from_db()
+
+    event_action = (
+        ActivityAction.DAILY_PLAN_FINALIZED
+        if finalize
+        else ActivityAction.DAILY_PLAN_ACTUALS_UPDATED
+    )
+
+    event_message = (
+        f"{request.user.full_name or request.user.email or request.user.username} "
+        f"finalized daily consumption plan #{int(plan.pk)}"
+        if finalize
+        else (
+            f"{request.user.full_name or request.user.email or request.user.username} "
+            f"updated actuals for daily consumption plan #{int(plan.pk)}"
+        )
+    )
+
+    transaction.on_commit(
+        lambda: emit_activity_event(
+            actor=request.user,
+            action=event_action,
+            target_type=ActivityTargetType.DAILY_PLAN,
+            target_id=int(plan.pk),
+            branch=plan.branch,
+            message=event_message,
+            metadata={
+                "daily_plan_id": int(plan.pk),
+                "branch_id": int(plan.branch.pk),
+                "branch_name": plan.branch.name,
+                "used_date": str(plan.used_date),
+                "status": plan.status,
+                "finalize": finalize,
+                "updated_summary_item_ids": payload_ids,
+                "updated_summary_item_count": len(payload_ids),
+            },
+        )
+    )
 
     return Response(
         DailyConsumptionPlanSerializer(plan).data,
@@ -1361,5 +1478,99 @@ def retrieve_daily_consumption_plan_child(
 
     return Response(
         CookBatchSerializer(batch).data,
+        status=status.HTTP_200_OK,
+    )
+
+
+@extend_schema(
+    methods=["GET", "POST"],
+    request=DailySharedIngredientRuleSerializer,
+    responses={
+        200: DailySharedIngredientRuleSerializer(many=True),
+        201: DailySharedIngredientRuleSerializer,
+        403: OpenApiResponse(description="Forbidden"),
+    },
+)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def daily_shared_ingredient_rules(request):
+    """
+    GET  /api/cooking/daily-shared-rules/
+    POST /api/cooking/daily-shared-rules/
+    """
+
+    if request.method == "GET":
+        rules = DailySharedIngredientRule.objects.all().order_by("keyword")
+
+        return Response(
+            DailySharedIngredientRuleSerializer(rules, many=True).data,
+            status=status.HTTP_200_OK,
+        )
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to create shared ingredient rules."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = DailySharedIngredientRuleSerializer(data=request.data)
+
+    if not serializer.is_valid():
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    rule = serializer.save(created_by=request.user)
+
+    return Response(
+        DailySharedIngredientRuleSerializer(rule).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@extend_schema(
+    methods=["PATCH", "DELETE"],
+    request=DailySharedIngredientRuleSerializer,
+    responses={
+        200: DailySharedIngredientRuleSerializer,
+        204: OpenApiResponse(description="Deleted"),
+        403: OpenApiResponse(description="Forbidden"),
+        404: OpenApiResponse(description="Rule not found"),
+    },
+)
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def daily_shared_ingredient_rule_detail(request, rule_id: int):
+    """
+    PATCH  /api/cooking/daily-shared-rules/{rule_id}/
+    DELETE /api/cooking/daily-shared-rules/{rule_id}/
+    """
+
+    if not has_global_access(request.user):
+        return Response(
+            {"detail": "You do not have permission to manage shared ingredient rules."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    rule = get_object_or_404(DailySharedIngredientRule, pk=rule_id)
+
+    if request.method == "DELETE":
+        rule.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    serializer = DailySharedIngredientRuleSerializer(
+        rule,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    rule = serializer.save()
+
+    return Response(
+        DailySharedIngredientRuleSerializer(rule).data,
         status=status.HTTP_200_OK,
     )

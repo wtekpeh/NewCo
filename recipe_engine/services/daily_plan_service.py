@@ -15,6 +15,7 @@ from cooking.models import (
     DailyConsumptionPlanRecipe,
     DailyConsumptionPlanIngredientSummary,
     DailyPlanIngredientScale,
+    DailySharedIngredientRule,
 )
 from recipes.models import Recipe, RecipeIngredient
 from recipe_engine.scaling import (
@@ -44,14 +45,26 @@ def _normalize_upper(value: Any) -> str:
 
 def _is_shared_adjustable(ingredient: str, group: str = "") -> bool:
     """
-    Initial rule-based shared ingredient detection.
+    Determines whether an ingredient should participate
+    in Daily Plan shared-adjustment learning.
 
-    Later this can be replaced or enhanced with a DB field such as:
-      shared_adjustable = true
-    on RecipeIngredient or IngredientCategory.
+    Priority:
+      1. DB-managed keyword rules
+      2. group fallback
+      3. hardcoded fallback rules
     """
+
     name = ingredient.lower().strip()
     group_value = group.lower().strip()
+
+    active_rules = DailySharedIngredientRule.objects.filter(is_active=True).values_list(
+        "keyword", flat=True
+    )
+
+    normalized_rules = [str(rule).lower().strip() for rule in active_rules]
+
+    if any(rule in name for rule in normalized_rules):
+        return True
 
     if group_value in {"seasoning", "aromatic"}:
         return True
@@ -60,7 +73,25 @@ def _is_shared_adjustable(ingredient: str, group: str = "") -> bool:
 
 
 def _default_factor_for_ingredient(ingredient: str, group: str = "") -> float:
+    """
+    Default factor lookup for shared ingredients.
+
+    Priority:
+      1. DB-managed keyword rules
+      2. hardcoded defaults
+      3. group fallback
+      4. 1.0
+    """
+
     name = ingredient.lower().strip()
+
+    active_rules = DailySharedIngredientRule.objects.filter(is_active=True)
+
+    for rule in active_rules:
+        keyword = str(rule.keyword or "").lower().strip()
+
+        if keyword and keyword in name:
+            return float(rule.factor)
 
     for key, factor in DEFAULT_SHARED_FACTORS.items():
         if key in name:

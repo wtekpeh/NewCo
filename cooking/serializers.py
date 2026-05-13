@@ -5,6 +5,7 @@ from .models import (
     DailyConsumptionPlan,
     DailyConsumptionPlanRecipe,
     DailyConsumptionPlanIngredientSummary,
+    DailySharedIngredientRule,
 )
 
 
@@ -242,4 +243,28 @@ class DailyConsumptionPlanSerializer(serializers.ModelSerializer):
             "created_at",
             "recipes",
             "ingredient_summaries",
+        ]
+
+
+class DailySharedIngredientRuleSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(
+        source="created_by.full_name",
+        read_only=True,
+    )
+
+    class Meta:
+        model = DailySharedIngredientRule
+        fields = [
+            "id",
+            "keyword",
+            "factor",
+            "is_active",
+            "created_by",
+            "created_by_name",
+            "created_at",
+        ]
+        read_only_fields = [
+            "created_by",
+            "created_by_name",
+            "created_at",
         ]
